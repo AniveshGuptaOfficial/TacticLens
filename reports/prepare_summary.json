@@ -1,0 +1,24 @@
+{
+  "datasets": {
+    "p4g": "ok (20935 turns)",
+    "mentalmanip": "ok (26055 turns)",
+    "psyscam": "ok (730 turns)",
+    "sms_human": "ok (5971 turns)",
+    "sms_llm": "ok (993 turns)",
+    "sms_munoz": "disabled in configs/datasets.yaml"
+  },
+  "turns": 54383,
+  "dialogues": 12411,
+  "duplicates_removed": {
+    "mentalmanip:exact": 1,
+    "sms_human:exact": 231,
+    "sms_human:near": 64,
+    "sms_llm:exact": 4
+  },
+  "split_dialogues": {
+    "train": 8687,
+    "val": 1862,
+    "test": 1862
+  },
+  "unmapped_label_types": 0
+}

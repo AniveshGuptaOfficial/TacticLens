@@ -1,0 +1,88 @@
+# Where each dataset lives and how to read it (FR-DAT-01, FR-DAT-02).
+# Column names: if a value is null, the loader auto-detects the column from common names.
+# After downloading, run `python -m tacticlens.cli inspect` and fix any column here if needed.
+
+seed: 42
+split: {train: 0.70, val: 0.15, test: 0.15}
+dedupe: {jaccard: 0.9, shingle: 5, num_perm: 64, bands: 16}
+
+datasets:
+  p4g:
+    dir: data/raw/p4g
+    genre: persuasion
+    source: human
+    licence: Apache-2.0
+    url: https://gitlab.com/ucdavisnlp/persuasionforgood
+    # Annotated 300 dialogues (strategy per utterance)
+    annotated_dialog_file: null      # auto: *300_dialog*.xlsx or .csv
+    full_dialog_file: null           # auto: *full_dialog*.csv
+    info_file: null                  # auto: *full_info*.csv or *300_info*
+    columns:
+      dialogue_id: B2
+      role: B4                       # 0 = persuader (ER), 1 = persuadee (EE)
+      text: Unit
+      turn: Turn
+      label_er: er_label_1
+      label_er_2: er_label_2         # second persuader label, present on some sentences
+      donation: B6
+
+  mentalmanip:
+    dir: data/raw/mentalmanip
+    genre: manipulation
+    source: human
+    licence: CC-BY-NC-4.0
+    url: https://github.com/audreycs/MentalManip
+    file: null                       # auto: *mentalmanip_maj*.csv, else first csv
+    columns:
+      id: null                       # auto: id / ID
+      dialogue: null                 # auto: dialogue / Dialogue
+      manipulative: null             # auto: manipulative / Manipulative
+      technique: null                # auto: technique / Technique
+      vulnerability: null            # auto: vulnerability / Vulnerability
+
+  sms_human:
+    dir: data/raw/sms_human
+    genre_from_label: true           # ham -> neutral, spam/smishing -> scam
+    source: human
+    licence: CC-BY-4.0
+    url: https://data.mendeley.com/datasets/f45bkkt8pr/1
+    file: null
+    columns: {label: null, text: null}
+
+  sms_llm:
+    # LLM-written SMS, generated on the laptop with free local models:
+    #   python -m tacticlens.cli gen-llm-sms
+    # Prompts give a topic and sender only, never a tactic (see data/generate_llm_sms.py).
+    dir: data/raw/sms_llm_gen
+    genre_from_label: true
+    source: llm
+    licence: generated-by-project (MIT)
+    clean_generated: true            # re-apply generate_llm_sms.clean() when loading
+    file: llm_sms.csv
+    columns: {label: LABEL, text: TEXT}
+
+  sms_munoz:
+    # DISABLED: checked 6 Nov 2026. 6,269 of 10,191 messages (61.5%) are exact copies of
+    # Mishra-Soni, and the rest are synonym-swapped copies ("we embody prove to contact u"),
+    # not LLM-written text. Not usable as the LLM-written scam set for O5.
+    enabled: false
+    dir: data/raw/sms_llm
+    genre_from_label: true
+    source: llm
+    licence: CC-BY-4.0
+    url: https://data.mendeley.com/datasets/vmg875v4xs/1
+    file: null
+    columns: {label: null, text: null}
+
+  psyscam:
+    dir: data/raw/psyscam
+    genre: scam
+    source: human
+    licence: unstated-research-only
+    url: https://arxiv.org/abs/2505.15017
+    file: D2.csv                     # public release: 730 reports (full set on request)
+    columns:
+      id: scam_id
+      text: description              # report text, incl. the scammer's words
+      techniques: PTs                # {'Technique': 'evidence quote', ...}
+      evidence: PTs                  # same column: the dict values are the quotes

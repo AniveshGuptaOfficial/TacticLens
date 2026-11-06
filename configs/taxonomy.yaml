@@ -1,0 +1,133 @@
+# Shared taxonomy: 10 influence tactics + none (SRS section 6.2, FR-TAX-01, FR-TAX-02).
+# A tactic alone does not decide persuasion vs manipulation: group + role + genre together do.
+
+tactics:
+  T1:
+    name: Rational appeal
+    group: legitimate
+    definition: Gives reasons, facts or evidence to support the request.
+    examples: ["Every $2 buys a child a vaccine.", "The charity spends 90% of funds on programs."]
+    counter_example: "Do it now or you'll regret it."
+  T2:
+    name: Emotional appeal (sympathy)
+    group: legitimate
+    definition: Appeals to compassion or other emotions about the cause, without pressure on the target.
+    examples: ["Imagine a child going to bed hungry tonight.", "These families have lost everything."]
+    counter_example: "You'll feel terrible if your family suffers because of you."
+  T3:
+    name: Credibility / authority
+    group: legitimate
+    definition: Claims or shows expertise, official status or trustworthiness of the speaker or source.
+    examples: ["Save the Children is rated four stars by Charity Navigator.", "This is the State Bank security team."]
+    counter_example: "Lots of people already joined."
+  T4:
+    name: Personal story / self-modelling
+    group: legitimate
+    definition: Shares the speaker's own experience or behaviour as a model for the target.
+    examples: ["I donated last year myself.", "When my mother was ill, a charity helped us."]
+    counter_example: "Our records show your account is overdue."
+  T5:
+    name: Urgency / scarcity
+    group: pressure
+    definition: Creates time pressure or limited availability to cut short the target's thinking.
+    examples: ["Your account will be blocked in 2 hours.", "Offer valid today only."]
+    counter_example: "Take your time and think about it."
+  T6:
+    name: Reward / reciprocity
+    group: pressure
+    definition: Offers a gain, prize or favour, or uses a small first commitment to get a bigger one.
+    examples: ["You've won Rs 10,000, claim now.", "Just give $1 today, then we can talk about more."]
+    counter_example: "Your parcel is waiting."
+  T7:
+    name: Flattery / liking
+    group: pressure
+    definition: Builds liking through compliments, closeness or charm to lower the target's guard.
+    examples: ["As a valued customer you've been selected.", "You're so kind, I knew you'd understand."]
+    counter_example: "Please confirm your address."
+  T8:
+    name: Guilt / obligation
+    group: manipulative
+    definition: Makes the target feel responsible or guilty, often by the speaker playing victim or servant.
+    examples: ["After everything I've done for you?", "Don't let your family suffer."]
+    counter_example: "Here is the information you asked for."
+  T9:
+    name: Threat / intimidation
+    group: manipulative
+    definition: Threatens harm, punishment or anger if the target doesn't comply.
+    examples: ["Legal action will be taken against you.", "Don't make me angry again."]
+    counter_example: "Let me know if you have questions."
+  T10:
+    name: Distortion and blame
+    group: manipulative
+    definition: Denies, evades, rationalises, shames or blames to distort the target's view of what happened.
+    examples: ["That never happened, you're imagining things.", "It's your fault I had to do it."]
+    counter_example: "Sorry, I made a mistake."
+
+# Extra labels kept but not part of the 10 (SRS 6.1: Social Proof becomes T11 only if common after kappa).
+extra_labels:
+  X_SOCIAL_PROOF:
+    name: Social proof (flagged)
+    definition: Points to what many others are doing or have done.
+
+# Source label -> shared tactic(s). Keys are matched after lower-casing and normalising
+# spaces, hyphens and underscores (see taxonomy/mapping.py). [] = maps to none on purpose.
+mappings:
+  p4g:
+    logical-appeal: [T1]
+    donation-information: [T1]
+    emotion-appeal: [T2]
+    credibility-appeal: [T3]
+    personal-story: [T4]
+    self-modeling: [T4]
+    foot-in-the-door: [T6]
+    praise-user: [T7]               # complimenting the persuadee = building liking
+    ask-donate-more: [T6]           # stepping up after a first yes, like foot-in-the-door
+    # dialogue acts that are the request itself or ordinary conversation -> no tactic
+    proposition-of-donation: []
+    ask-donation-amount: []
+    confirm-donation: []
+    ask-not-donate-reason: []
+    acknowledgement: []
+    off-task: []
+    closing: []
+    comment-partner: []
+    you-are-welcome: []
+    positive-to-inquiry: []
+    neutral-to-inquiry: []
+    negative-to-inquiry: []
+    non-personal-task-related-inquiry: []
+    personal-related-inquiry: []
+    source-related-inquiry: []
+    task-related-inquiry: []
+    greeting: []
+    thank: []
+    other: []
+  mentalmanip:
+    denial: [T10]
+    evasion: [T10]
+    feigning innocence: [T10]
+    rationalization: [T10]
+    accusation: [T10]
+    shaming or belittlement: [T10]
+    playing the victim role: [T8]
+    playing victim role: [T8]       # spelling used in the released CSV
+    playing the servant role: [T8]
+    playing servant role: [T8]
+    intimidation: [T9]
+    brandishing anger: [T9]
+    persuasion or seduction: [T6, T7]
+  psyscam:
+    authority and impersonation: [T3]
+    pretext and trust: [T3]
+    phantom riches: [T6]
+    reciprocity: [T6]
+    consistency: [T6]
+    liking: [T7]
+    urgency and scarcity: [T5]
+    scarcity and urgency: [T5]      # alternative spellings in the released D2.csv
+    urgency: [T5]
+    scarcity: [T5]
+    scam message: []                # annotation notes, not techniques
+    narrative: []
+    fear and intimidation: [T9]
+    social proof: [X_SOCIAL_PROOF]

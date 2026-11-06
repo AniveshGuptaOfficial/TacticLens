@@ -1,0 +1,27 @@
+[build-system]
+requires = ["setuptools>=77"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "tacticlens"
+version = "0.1.0"
+description = "Role-aware influence tactic analysis across persuasion, manipulation and scams"
+requires-python = ">=3.10"
+license = "MIT"
+authors = [{ name = "Anivesh Gupta" }]
+
+[tool.setuptools.packages.find]
+where = ["src"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+pythonpath = ["src"]
+
+[tool.ruff]
+line-length = 100
+target-version = "py310"
+
+[tool.ruff.lint]
+# Fixed rule set, so CI doesn't change when a new ruff version adds default rules:
+# pycodestyle errors (E4/E7/E9), pyflakes (F) and import sorting (I).
+select = ["E4", "E7", "E9", "F", "I"]
