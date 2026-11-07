@@ -1,0 +1,13 @@
+# Cue lexicon for M1 (FR-FEA-02). One list per tactic; matched as whole words / phrases,
+# case-insensitive, after normalisation. Kept short and general on purpose: M1 tests how far
+# surface cues alone get, so the list must not be tuned on the test set.
+T1:  [because, percent, "%", million, research, data, statistics, evidence, fact, facts, proven, study, "for example", "this means", every, each, cents, dollars, "$"]
+T2:  [imagine, children, child, kids, hungry, suffering, poor, poverty, families, heart, sad, help them, lives, save, desperate, tragic]
+T3:  [official, bank, government, police, department, team, security, rated, certified, registered, verified, charity navigator, organization, officer, authority, customer care, support team, irs, kyc]
+T4:  ["i donated", "i give", "my family", "my mother", "my father", "when i", "i myself", "i also", "i usually", "personally", "my own", "i have"]
+T5:  [urgent, urgently, immediately, now, today, "within 24 hours", "24 hours", "within", expires, expire, expired, "last chance", "limited time", hurry, deadline, "act now", asap, "before midnight", soon, quickly, final]
+T6:  [won, winner, prize, reward, cash, free, bonus, gift, claim, refund, offer, "selected", lottery, "just a little", "even a small", "just one", "start with"]
+T7:  [dear, valued, "you are so", "you're so", kind, wonderful, amazing, special, smart, sweetheart, honey, "i trust you", "you seem", beautiful, generous, great person]
+T8:  ["after everything", "how could you", "you owe me", "because of you", "your fault", "i sacrificed", "i did this for you", disappoint, ungrateful, selfish, "you never", "you always", guilty, "let me down"]
+T9:  [arrest, arrested, warrant, legal action, lawsuit, police, jail, suspend, suspended, blocked, block, terminate, terminated, penalty, fine, fines, "or else", regret, "you'll be sorry", threat, danger, deactivated, disconnect, disconnection]
+T10: ["never happened", "you're imagining", "you are imagining", crazy, "you're overreacting", "overreacting", "not my fault", "you made me", "you misunderstood", "i never said", "that's not what", stupid, pathetic, "you're wrong", "it's nothing", "calm down", sensitive]

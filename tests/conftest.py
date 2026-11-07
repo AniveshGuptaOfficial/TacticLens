@@ -136,3 +136,33 @@ def project(tmp_path: Path) -> Path:
     _write_sms(raw / "sms_llm_gen", rng, 80, llm=True)
     _write_psyscam(raw / "psyscam", rng)
     return root
+
+
+def fake_encoder(dim: int = 64):
+    """Deterministic stand-in for MiniLM: hashed bag of words, L2-normalised. No downloads."""
+    import hashlib
+
+    import numpy as np
+
+    def enc(texts):
+        out = np.zeros((len(texts), dim), dtype=np.float32)
+        for i, t in enumerate(texts):
+            for w in t.lower().split():
+                h = int.from_bytes(hashlib.md5(w.encode()).digest()[:4], "little")
+                out[i, h % dim] += 1.0 if (h >> 8) % 2 else -1.0
+        n = np.linalg.norm(out, axis=1, keepdims=True)
+        return out / np.maximum(n, 1e-8)
+
+    return enc
+
+
+@pytest.fixture()
+def prepared(project):
+    from tacticlens.config import load_datasets_config
+    from tacticlens.data.pipeline import prepare, read_records
+    from tacticlens.taxonomy.mapping import load_taxonomy
+
+    cfg = load_datasets_config(project)
+    tax = load_taxonomy(project / "configs" / "taxonomy.yaml")
+    prepare(cfg, project, tax)
+    return read_records(project / "data" / "processed" / "records.jsonl"), tax

@@ -3,7 +3,8 @@ import pandas as pd
 from tacticlens.config import load_datasets_config
 from tacticlens.data.pipeline import prepare, read_records
 from tacticlens.eval.metrics import bootstrap_ci, tune_thresholds
-from tacticlens.models.m0 import metrics_markdown, train_m0
+from tacticlens.models.common import results_markdown, run_model
+from tacticlens.models.m0 import M0
 from tacticlens.taxonomy.annotation import export_checkset, kappa_report
 from tacticlens.taxonomy.mapping import load_taxonomy
 
@@ -47,10 +48,11 @@ def test_thresholds_and_bootstrap():
 
 def test_m0_trains_and_reports(project, tmp_path):
     recs, tax = _prepared(project)
-    res = train_m0(recs, tax.tactic_ids, tmp_path / "m0", n_boot=50)
-    assert "macro_f1" in res["tactics"] and "macro_f1_ci95" in res["tactics"]
-    assert res["tactics"]["macro_f1"] > 0.5  # synthetic data is easy; this checks the plumbing
+    res = run_model(M0(), recs, tmp_path / "m0", n_boot=50)
+    assert "macro_f1" in res["turn"] and "macro_f1_ci95" in res["turn"]
+    assert res["turn"]["macro_f1"] > 0.5  # synthetic data is easy; this checks the plumbing
+    assert "dialogue" in res and res["dialogue"]["n"] > 0  # MentalManip dialogues, max over turns
     assert "macro_f1" in res["genre"]
-    md = metrics_markdown(res, {t: tax.name(t) for t in tax.all_label_ids})
-    assert "M0 baseline results" in md and "Urgency" in md
-    assert (tmp_path / "m0" / "m0_tactics.pkl").exists()
+    md = results_markdown(res, {t: tax.name(t) for t in tax.all_label_ids})
+    assert "M0" in md and "Urgency" in md
+    assert (tmp_path / "m0" / "test_predictions.npz").exists()

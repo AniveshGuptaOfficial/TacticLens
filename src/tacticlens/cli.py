@@ -79,14 +79,154 @@ def cmd_kappa(args) -> None:
     print(f"\nOverall kappa {overall} -> AC-01 {'MET' if overall >= 0.60 else 'NOT met'} (target 0.60)")
 
 
-def cmd_train_m0(args) -> None:
-    from .models.m0 import metrics_markdown, train_m0
-    root, cfg, tax = _paths(args)
-    res = train_m0(_records(root), tax.tactic_ids, root / "models" / "m0", n_boot=args.boot, seed=cfg.get("seed", 42))
-    md = metrics_markdown(res, {t: tax.name(t) for t in tax.all_label_ids})
+def _model_dir_name(model: str, variant: str, no_weak: bool = False) -> str:
+    if model != "m3":
+        return f"{model}_strict" if no_weak else model  # strict = no weak MentalManip turn labels
+    return "dual_role" if variant == "dual-role" else f"m3_{variant}"
+
+
+def _m3_dir(args) -> str:
+    base = _model_dir_name("m3", args.variant)
+    return base + ("_nolex" if getattr(args, "no_lexical", False) else "")
+
+
+M3_GRID = {"mil_weight": [0.3, 1.0], "pos_clip": [5.0, 20.0], "dropout": [0.2, 0.4]}
+M3_BEST = Path("configs") / "m3_best.json"
+
+
+def _m3_hparams(root: Path, args) -> dict:
+    """configs/m3_best.json (written by sweep-m3) if present, then any --mil-weight/--pos-clip/--dropout flags.
+    Every M3 variant and ablation then uses the same settings, chosen on validation data only."""
+    hp = {}
+    best = root / M3_BEST
+    if best.exists():
+        hp.update(json.loads(best.read_text(encoding="utf-8"))["params"])
+    for k in M3_GRID:
+        v = getattr(args, k, None)
+        if v is not None:
+            hp[k] = v
+    if hp:
+        print("  M3 settings: " + ", ".join(f"{k}={v}" for k, v in hp.items()))
+    return hp
+
+
+def cmd_sweep_m3(args) -> None:
+    """Pick M3 settings on the validation split only (the test split is never touched)."""
+    import itertools
+
+    from .models.common import by_split
+    from .models.m3 import M3, LexicalSVD
+    root, cfg, _ = _paths(args)
+    seed = cfg.get("seed", 42)
+    sp = by_split(_records(root))
+    lex = LexicalSVD(256, seed).fit([r["text"] for r in sp["train"]])  # same for every run, fit once
+    keys = list(M3_GRID)
+    rows = []
+    out_json = root / "models" / "m3_sweep.json"
+    done = json.loads(out_json.read_text(encoding="utf-8")) if out_json.exists() and not args.restart else []
+    combos = list(itertools.product(*(M3_GRID[k] for k in keys)))
+    for i, vals in enumerate(combos, 1):
+        params = dict(zip(keys, vals))
+        prev = next((r for r in done if r["params"] == params), None)
+        if prev is not None:
+            print(f"[{i}/{len(combos)}] {params}  val mAP {prev['val_map']:.3f}  (already done)")
+            rows.append(prev)
+            continue
+        print(f"[{i}/{len(combos)}] {params}")
+        m = M3(root / "models" / "embeddings", seed=seed, epochs=args.epochs, threads=args.threads,
+               lexical_model=lex, log=(print if args.verbose else (lambda *_: None)), **params)
+        m.fit(sp["train"], sp["val"])
+        best_ep = max(m.history, key=lambda h: h["val_map"])["epoch"]
+        rows.append({"params": params, "val_map": round(m.best_val, 4), "best_epoch": best_ep, "epochs_run": len(m.history)})
+        print(f"      val mAP {m.best_val:.3f} (best epoch {best_ep} of {len(m.history)})")
+        out_json.parent.mkdir(parents=True, exist_ok=True)
+        out_json.write_text(json.dumps(rows, indent=2), encoding="utf-8")  # resume-safe
+    rows.sort(key=lambda r: -r["val_map"])
+    out_json.write_text(json.dumps(rows, indent=2), encoding="utf-8")
+    lines = ["# M3 settings sweep (validation mAP only, test split untouched)", "",
+             "| Rank | MIL weight | pos-weight cap | Dropout | Val mAP | Best epoch |", "|---|---|---|---|---|---|"]
+    for k, r in enumerate(rows, 1):
+        p = r["params"]
+        lines.append(f"| {k} | {p['mil_weight']} | {p['pos_clip']} | {p['dropout']} | {r['val_map']:.3f} | {r['best_epoch']} |")
+    md = "\n".join(lines) + "\n"
     (root / "reports").mkdir(exist_ok=True)
-    (root / "reports" / "m0_results.md").write_text(md, encoding="utf-8")
+    (root / "reports" / "m3_sweep.md").write_text(md, encoding="utf-8")
+    (root / M3_BEST).write_text(json.dumps({"params": rows[0]["params"], "val_map": rows[0]["val_map"]}, indent=2),
+                                encoding="utf-8")
+    print("\n" + md)
+    print(f"Best settings saved to {M3_BEST}; `train m3` (and every variant) now uses them.")
+
+
+def _build_model(model: str, root: Path, args, seed: int):
+    cache = root / "models" / "embeddings"
+    if model == "m0":
+        from .models.m0 import M0
+        return M0(weak=not args.no_weak, seed=seed)
+    if model == "m1":
+        from .models.m1 import M1
+        return M1(weak=not args.no_weak, seed=seed)
+    if model == "m2":
+        from .models.m2 import M2
+        return M2(cache, weak=not args.no_weak, seed=seed)
+    if model == "m3":
+        try:
+            from .models.m3 import M3
+        except ImportError as e:
+            raise SystemExit(str(e)) from e
+        hp = _m3_hparams(root, args)
+        return M3(cache, variant=args.variant, seed=seed, epochs=args.epochs, threads=args.threads,
+                  lexical=not args.no_lexical, **hp)
+    raise SystemExit(f"unknown model {model}")
+
+
+def cmd_train(args) -> None:
+    """Train + evaluate one model the same way as all others (models/common.py)."""
+    from .models.common import results_markdown, run_model
+    root, cfg, tax = _paths(args)
+    seed = cfg.get("seed", 42)
+    model = _build_model(args.model, root, args, seed)
+    name = _m3_dir(args) if args.model == "m3" else _model_dir_name(args.model, "full", getattr(args, "no_weak", False))
+    out = root / "models" / name
+    res = run_model(model, _records(root), out, n_boot=args.boot, seed=seed)
+    md = results_markdown(res, {t: tax.name(t) for t in tax.all_label_ids})
+    if args.model == "m1" and hasattr(model, "importances"):
+        md += "\n## Top features per tactic\n\n" + "\n".join(
+            f"- {t}: " + ", ".join(f"{n} ({v:.2f})" for n, v in feats) for t, feats in model.importances(5).items()) + "\n"
+    if hasattr(model, "save"):
+        model.save(out if args.model == "m3" else out / f"{name}.pkl")
+    (root / "reports").mkdir(exist_ok=True)
+    (root / "reports" / f"{name}_results.md").write_text(md, encoding="utf-8")
     print(md)
+
+
+def cmd_train_m0(args) -> None:  # kept for the phase-1 commands in the README
+    args.model, args.no_weak = "m0", False
+    cmd_train(args)
+
+
+def cmd_embed(args) -> None:
+    """Pre-compute the MiniLM embeddings for every turn (M2 and M3 reuse them)."""
+    from .models.embed import EmbeddingCache
+    root, _, _ = _paths(args)
+    recs = _records(root)
+    cache = EmbeddingCache(root / "models" / "embeddings")
+    E = cache.embed([r["text"] for r in recs])
+    print(f"{E.shape[0]:,} turns -> {E.shape[1]}-dim embeddings in {cache.vec_path}")
+
+
+def cmd_compare(args) -> None:
+    """Paired bootstrap: is model B better than model A? (FR-EVA-02)"""
+    from .eval.compare import paired_bootstrap
+    root, _, _ = _paths(args)
+    test = [r for r in _records(root) if r["split"] == "test"]
+    pa = root / "models" / args.a / "test_predictions.npz"
+    pb = root / "models" / args.b / "test_predictions.npz"
+    for level in ("turn", "dialogue"):
+        r = paired_bootstrap(test, pa, pb, level=level, n_boot=args.boot)
+        lo, hi = r["diff_ci95"]
+        verdict = "B better (p < 0.05)" if r["p_b_not_better"] < 0.05 else "no significant gain"
+        print(f"{level:9s} n={r['n']:,}  {args.a} {r['macro_f1_a']:.3f}  vs  {args.b} {r['macro_f1_b']:.3f}  "
+              f"diff {r['diff']:+.3f} (95% CI {lo:+.3f} to {hi:+.3f}), p={r['p_b_not_better']:.3f}  -> {verdict}")
 
 
 def cmd_llm_overlap(args) -> None:
@@ -141,6 +281,29 @@ def main(argv=None) -> None:
     p = sub.add_parser("train-m0")
     p.add_argument("--boot", type=int, default=1000)
     p.set_defaults(fn=cmd_train_m0)
+    p = sub.add_parser("train", help="train + evaluate m0, m1, m2 or m3")
+    p.add_argument("model", choices=["m0", "m1", "m2", "m3"])
+    p.add_argument("--variant", default="full", help="m3 only: full, no-role, no-context, no-adv, no-mil, dual-role")
+    p.add_argument("--epochs", type=int, default=40, help="m3: max epochs (early stopping after 5 without gain)")
+    p.add_argument("--no-lexical", action="store_true", help="m3: MiniLM embedding only, no TF-IDF-SVD features")
+    p.add_argument("--threads", type=int, default=None, help="CPU threads for PyTorch (default: all)")
+    p.add_argument("--mil-weight", type=float, default=None, help="m3: weight of the MentalManip MIL loss")
+    p.add_argument("--pos-clip", type=float, default=None, help="m3: cap on the rare-class positive weight")
+    p.add_argument("--dropout", type=float, default=None, help="m3: dropout")
+    p.add_argument("--no-weak", action="store_true", help="m0-m2: don't use MentalManip dialogue labels as weak turn labels")
+    p.add_argument("--boot", type=int, default=1000)
+    p.set_defaults(fn=cmd_train)
+    p = sub.add_parser("sweep-m3", help="choose M3 settings on validation data (8 runs, resumable)")
+    p.add_argument("--epochs", type=int, default=40)
+    p.add_argument("--threads", type=int, default=None)
+    p.add_argument("--restart", action="store_true", help="ignore earlier sweep results")
+    p.set_defaults(fn=cmd_sweep_m3)
+    sub.add_parser("embed").set_defaults(fn=cmd_embed)
+    p = sub.add_parser("compare", help="paired bootstrap between two trained models")
+    p.add_argument("a", help="baseline folder under models/, e.g. m2")
+    p.add_argument("b", help="new model folder under models/, e.g. m3_full")
+    p.add_argument("--boot", type=int, default=2000)
+    p.set_defaults(fn=cmd_compare)
     p = sub.add_parser("gen-llm-sms")
     p.add_argument("--models", help="comma-separated Ollama models (default: qwen2.5:3b,llama3.2:3b,gemma2:2b)")
     p.add_argument("--smishing", type=int, default=400)

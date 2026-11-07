@@ -1,12 +1,5 @@
-# Phase 2-4: neural models, statistics, serving. CPU-only builds.
-# Install PyTorch CPU first:
-#   pip install torch --index-url https://download.pytorch.org/whl/cpu
-xgboost>=2.0,<4
-statsmodels>=0.14,<1
-transformers>=4.44,<6
-sentence-transformers>=3.0,<6
-onnx>=1.16,<2
-onnxruntime>=1.19,<2
-fastapi>=0.115,<1
-uvicorn>=0.30,<1
-gradio>=4.44,<7
+# Phase 2 (models). On Windows the PyPI torch wheel is CPU-only, which is what we want.
+torch>=2.2
+sentence-transformers>=3.0
+xgboost>=2.0
+statsmodels>=0.14

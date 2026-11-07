@@ -13,8 +13,8 @@ the code comments so each piece can be traced back.
 
 | Phase | Months | What | Status |
 |---|---|---|---|
-| 1 | 1-2 | Project setup, taxonomy, data pipeline, check set, kappa, M0 baseline | **Implemented** |
-| 2 | 3-4 | M1 (XGBoost + lexicon), M2 (MiniLM + MLP), M3 (role-aware GRU-attention), dual-role baseline | Next |
+| 1 | 1-2 | Project setup, taxonomy, data pipeline, check set, kappa, M0 baseline | **Done** |
+| 2 | 3-4 | M1 (XGBoost + lexicon), M2 (MiniLM + MLP), M3 (role-aware GRU-attention), dual-role baseline, ablations | **Implemented** |
 | 3 | 4-5 | Grounding audit, cross-genre transfer, human vs LLM, donation model | Planned |
 | 4 | 5-6 | ONNX int8, FastAPI, Gradio, Docker, Hugging Face Space, user study | Planned |
 
@@ -87,6 +87,40 @@ After both annotators fill in their check-set CSVs:
 
 ```powershell
 python -m tacticlens.cli kappa        # Cohen's kappa per tactic (FR-TAX-06, AC-01)
+```
+
+## Phase 2: models
+
+Install the model libraries once (about 1 GB with PyTorch CPU):
+
+```cmd
+pip install -r requirements-ml.txt
+pytest -q
+```
+
+Train and evaluate. Every model is scored the same way (`models/common.py`), and results go to
+`reports/<model>_results.md` and `models/<model>/`:
+
+```cmd
+python -m tacticlens.cli train m0
+python -m tacticlens.cli train m1
+python -m tacticlens.cli embed                      :: MiniLM embeddings, cached, ~10-20 min once
+python -m tacticlens.cli train m2
+python -m tacticlens.cli sweep-m3                   :: pick M3 settings on validation only (8 runs, ~40 min, resumable)
+python -m tacticlens.cli train m3                   :: the proposed model (uses configs/m3_best.json)
+python -m tacticlens.cli train m3 --variant dual-role
+python -m tacticlens.cli train m3 --variant no-role       :: ablations (FR-MOD-09)
+python -m tacticlens.cli train m3 --variant no-context
+python -m tacticlens.cli train m3 --variant no-adv
+python -m tacticlens.cli train m3 --variant no-mil
+```
+
+Is M3 better? Paired bootstrap over dialogues (FR-EVA-02):
+
+```cmd
+python -m tacticlens.cli compare m2 m3_full
+python -m tacticlens.cli compare dual_role m3_full
+python -m tacticlens.cli compare m3_no-role m3_full       :: AC-03: does role help?
 ```
 
 ## First checks to do (from the SRS)
