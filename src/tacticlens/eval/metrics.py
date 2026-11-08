@@ -41,13 +41,30 @@ def bootstrap_ci(metric_fn, groups: np.ndarray, n_boot: int = 1000, seed: int = 
     return float(lo), float(hi)
 
 
-def tune_thresholds(y_true: np.ndarray, y_score: np.ndarray, grid: np.ndarray | None = None) -> np.ndarray:
-    """Per-label threshold that maximises F1 on validation data (FR-MOD-07). Default 0.5 if no positives."""
+def tune_thresholds(y_true: np.ndarray, y_score: np.ndarray, grid: np.ndarray | None = None,
+                    n_boot: int = 0, seed: int = 42) -> np.ndarray:
+    """Per-label threshold that maximises F1 on validation data (FR-MOD-07). Default 0.5 if no positives.
+
+    With n_boot > 0 the F1 of each candidate threshold is averaged over bootstrap resamples of the
+    validation rows before picking the best. With only a handful of positives (T4, T7 ...) the plain
+    argmax jumps to whatever threshold happens to fit those few rows; the average is much steadier.
+    """
     grid = grid if grid is not None else np.linspace(0.05, 0.95, 19)
+    y_true = np.asarray(y_true)
+    n = len(y_true)
+    W = np.ones((1, n))
+    if n_boot > 0 and n > 0:
+        W = np.random.default_rng(seed).multinomial(n, np.full(n, 1.0 / n), size=n_boot).astype(float)
     th = np.full(y_true.shape[1], 0.5)
     for j in range(y_true.shape[1]):
-        if y_true[:, j].sum() == 0:
+        y = y_true[:, j].astype(float)
+        if y.sum() == 0:
             continue
-        best = max(grid, key=lambda t: f1_score(y_true[:, j], (y_score[:, j] >= t).astype(int), zero_division=0))
-        th[j] = best
+        P = (y_score[:, j][None, :] >= grid[:, None]).astype(float)  # [grid, n]
+        tp = W @ (P * y).T  # [boot, grid]
+        fp = W @ (P * (1 - y)).T
+        fn = W @ y[:, None] - tp
+        denom = 2 * tp + fp + fn
+        f1 = np.divide(2 * tp, denom, out=np.zeros_like(tp), where=denom > 0)
+        th[j] = grid[int(np.argmax(f1.mean(axis=0)))]
     return th

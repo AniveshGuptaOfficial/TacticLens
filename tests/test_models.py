@@ -70,3 +70,37 @@ def test_m2_and_compare(prepared, tmp_path):
     test = by_split(recs)["test"]
     r = paired_bootstrap(test, tmp_path / "m0" / "test_predictions.npz", tmp_path / "m2" / "test_predictions.npz", n_boot=50)
     assert set(r) >= {"diff", "diff_ci95", "p_b_not_better"} and 0 <= r["p_b_not_better"] <= 1
+
+
+def test_summarize_groups_seeds(tmp_path):
+    import json
+
+    from tacticlens.cli import summarize_runs
+    for name, f1 in (("m3_full", 0.50), ("m3_full_s1", 0.54), ("m0", 0.40)):
+        (tmp_path / name).mkdir()
+        (tmp_path / name / "metrics.json").write_text(json.dumps({"turn": {"macro_f1": f1}, "genre": {"macro_f1": 0.8}}))
+    rows = {r["model"]: r for r in summarize_runs(tmp_path)}
+    assert rows["m3_full"]["seeds"] == 2 and abs(rows["m3_full"]["turn"] - 0.52) < 1e-9
+    assert rows["m3_full"]["turn_sd"] > 0 and rows["m0"]["turn_sd"] is None and "dialogue" not in rows["m0"]
+
+
+def test_thresholds_per_level_and_rescore(prepared, tmp_path):
+    import json
+
+    import numpy as np
+
+    from tacticlens.eval.metrics import tune_thresholds
+    from tacticlens.models.common import TACTICS, run_model, score_saved
+    from tacticlens.models.m0 import M0
+    recs, _ = prepared
+    res = run_model(M0(), recs, tmp_path / "m0", n_boot=20)
+    th = np.load(tmp_path / "m0" / "test_predictions.npz")["thresholds"]
+    assert th.shape == (2, len(TACTICS)) and set(res["thresholds"]) == {"turn", "dialogue"}
+    again = score_saved("M0", tmp_path / "m0", recs, n_boot=20)  # from saved files, no retraining
+    assert abs(again["turn"]["macro_f1"] - res["turn"]["macro_f1"]) < 1e-9
+    assert json.loads((tmp_path / "m0" / "metrics.json").read_text())["model"] == "M0"
+    # smoothed thresholds stay inside the grid and need no positives at every level
+    y = np.array([[1], [0], [0], [0], [1], [0]])
+    s = np.array([[0.9], [0.2], [0.6], [0.1], [0.7], [0.3]])
+    t = tune_thresholds(y, s, n_boot=100)
+    assert 0.3 < t[0] <= 0.7

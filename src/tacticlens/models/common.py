@@ -5,14 +5,18 @@ Every model implements the same two calls:
     predict(records: list[dict]) -> (tactic_scores [N, 10], genre_probs [N, 4])
 and `run_model` does the rest the same way for all of them, so the numbers are comparable:
 
-  thresholds   per tactic, tuned on validation (FR-MOD-07):
-                 turn-labelled tactics on turn-level val rows (P4G, PsyScam)
-                 dialogue-only tactics (T8, T10) on val MentalManip dialogues
+  thresholds   per tactic AND per level, tuned on validation (FR-MOD-07), shape [2, 10]:
+                 row 0 (turn)      on turn-level val rows (P4G, PsyScam)
+                 row 1 (dialogue)  on max-pooled val MentalManip dialogues
+                 A max over many turns needs a higher cut-off than one turn, so T6/T7/T9 (which
+                 occur at both levels) get a separate threshold for each. F1 is averaged over
+                 bootstrap resamples of the validation rows, so rare tactics get stable thresholds.
   turn eval    tactic P/R/F1/AUC-PR on test turns that carry turn-level labels (FR-EVA-01)
   dialogue     tactic F1 on test MentalManip dialogues, dialogue score = max over its turns
   genre        macro-F1 over the 4 genres on every test turn
   CIs          95% cluster bootstrap over dialogues
-  saved        models/<name>/test_predictions.npz + metrics.json, for `compare` (FR-EVA-02)
+  saved        models/<name>/{val,test}_predictions.npz + metrics.json, for `compare` (FR-EVA-02)
+               and `rescore` (re-scores without retraining)
 
 Weak labels: baselines that only see single turns can't learn from MentalManip's per-dialogue
 labels directly, so by default every turn of a manipulative dialogue gets the dialogue's
@@ -102,28 +106,41 @@ def dialogue_pool(records: list[dict], scores: np.ndarray, only_level: str = "di
 
 
 # ----------------------------------------------------------------------- evaluation
-def tune_all_thresholds(val: list[dict], val_scores: np.ndarray) -> np.ndarray:
-    """Turn-level thresholds where turn labels exist, else dialogue-level (max-pooled) ones."""
-    th = np.full(len(TACTICS), 0.5)
+THRESH_BOOT = 200  # bootstrap resamples used to smooth the threshold choice
+
+
+def threshold_pair(th: np.ndarray) -> tuple[np.ndarray, np.ndarray]:
+    """(turn, dialogue) thresholds. Old prediction files hold one row used for both levels."""
+    th = np.asarray(th, dtype=float)
+    return (th[0], th[1]) if th.ndim == 2 else (th, th)
+
+
+def tune_all_thresholds(val: list[dict], val_scores: np.ndarray, n_boot: int = THRESH_BOOT) -> np.ndarray:
+    """[2, 10]: row 0 tuned on turn-level val rows, row 1 on max-pooled val dialogues.
+    A tactic with no positives at a level borrows the other level's threshold (else 0.5)."""
+    th_t = np.full(len(TACTICS), 0.5)
+    th_d = np.full(len(TACTICS), 0.5)
+    has_t = np.zeros(len(TACTICS), dtype=bool)
+    has_d = np.zeros(len(TACTICS), dtype=bool)
     tmask = np.array([r["label_level"] == "turn" for r in val])
     if tmask.any():
         yv = np.stack([turn_labels(r) for r, m in zip(val, tmask) if m])
-        th_turn = tune_thresholds(yv, val_scores[tmask])
-        has = yv.sum(axis=0) > 0
-        th[has] = th_turn[has]
-    else:
-        has = np.zeros(len(TACTICS), dtype=bool)
+        th_t = tune_thresholds(yv, val_scores[tmask], n_boot=n_boot)
+        has_t = yv.sum(axis=0) > 0
     _, pooled, dl = dialogue_pool(val, val_scores)
     if len(pooled):
-        th_d = tune_thresholds(dl, pooled)
-        dl_has = (dl.sum(axis=0) > 0) & ~has
-        th[dl_has] = th_d[dl_has]
-    return th
+        th_d = tune_thresholds(dl, pooled, n_boot=n_boot)
+        has_d = dl.sum(axis=0) > 0
+    th_t = np.where(has_t, th_t, np.where(has_d, th_d, 0.5))
+    th_d = np.where(has_d, th_d, np.where(has_t, th_t, 0.5))
+    return np.stack([th_t, th_d])
 
 
 def evaluate(test: list[dict], tactic_scores: np.ndarray, genre_probs: np.ndarray, th: np.ndarray,
              n_boot: int = 1000, seed: int = 42) -> dict:
-    res: dict = {"thresholds": dict(zip(TACTICS, np.round(th, 3).tolist()))}
+    th_t, th_d = threshold_pair(th)
+    res: dict = {"thresholds": {"turn": dict(zip(TACTICS, np.round(th_t, 3).tolist())),
+                                "dialogue": dict(zip(TACTICS, np.round(th_d, 3).tolist()))}}
 
     # turn level
     tm = np.array([r["label_level"] == "turn" for r in test])
@@ -131,7 +148,7 @@ def evaluate(test: list[dict], tactic_scores: np.ndarray, genre_probs: np.ndarra
         rows = [r for r, m in zip(test, tm) if m]
         Y = np.stack([turn_labels(r) for r in rows])
         S = tactic_scores[tm]
-        P = (S >= th).astype(int)
+        P = (S >= th_t).astype(int)
         rep = multilabel_report(Y, P, S, TACTICS)
         present = [TACTICS.index(t) for t in rep["labels_with_support"]]
         G = np.array([r["dialogue_id"] for r in rows])
@@ -144,7 +161,7 @@ def evaluate(test: list[dict], tactic_scores: np.ndarray, genre_probs: np.ndarra
     # dialogue level (MentalManip)
     dids, pooled, DL = dialogue_pool(test, tactic_scores)
     if len(dids):
-        DP = (pooled >= th).astype(int)
+        DP = (pooled >= th_d).astype(int)
         rep = multilabel_report(DL, DP, pooled, TACTICS)
         present = [TACTICS.index(t) for t in rep["labels_with_support"]]
         D = np.array(dids)
@@ -171,29 +188,51 @@ def evaluate(test: list[dict], tactic_scores: np.ndarray, genre_probs: np.ndarra
     return res
 
 
-def save_predictions(path: Path, test: list[dict], tactic_scores: np.ndarray, genre_probs: np.ndarray, th: np.ndarray) -> None:
+def save_predictions(path: Path, records: list[dict], tactic_scores: np.ndarray, genre_probs: np.ndarray | None,
+                     th: np.ndarray) -> None:
     np.savez_compressed(
         path,
-        dialogue_id=np.array([r["dialogue_id"] for r in test]),
-        turn_id=np.array([r["turn_id"] for r in test]),
+        dialogue_id=np.array([r["dialogue_id"] for r in records]),
+        turn_id=np.array([r["turn_id"] for r in records]),
         tactic_scores=tactic_scores.astype(np.float32),
-        genre_probs=genre_probs.astype(np.float32),
-        thresholds=th,
+        genre_probs=(genre_probs if genre_probs is not None else np.zeros((len(records), len(GENRES)))).astype(np.float32),
+        thresholds=np.asarray(th),
     )
+
+
+def load_predictions(path: Path, records: list[dict]) -> tuple[np.ndarray, np.ndarray]:
+    """Scores saved by save_predictions, put back in the order of `records`."""
+    z = np.load(path, allow_pickle=False)
+    pos = {(d, int(t)): i for i, (d, t) in enumerate(zip(z["dialogue_id"], z["turn_id"]))}
+    idx = np.array([pos[(r["dialogue_id"], int(r["turn_id"]))] for r in records])
+    return z["tactic_scores"][idx], z["genre_probs"][idx]
+
+
+def score_saved(name: str, out_dir: Path, records: list[dict], n_boot: int = 1000, seed: int = 42) -> dict:
+    """Re-tune thresholds and re-evaluate from saved val/test predictions, without retraining."""
+    sp = by_split(records)
+    sv, gv = load_predictions(out_dir / "val_predictions.npz", sp["val"])
+    st, gt = load_predictions(out_dir / "test_predictions.npz", sp["test"])
+    return _finish(name, out_dir, sp, sv, gv, st, gt, n_boot, seed)
+
+
+def _finish(name, out_dir, sp, sv, gv, st, gt, n_boot, seed) -> dict:
+    th = tune_all_thresholds(sp["val"], sv)
+    res = {"model": name, **evaluate(sp["test"], st, gt, th, n_boot=n_boot, seed=seed)}
+    save_predictions(out_dir / "val_predictions.npz", sp["val"], sv, gv, th)
+    save_predictions(out_dir / "test_predictions.npz", sp["test"], st, gt, th)
+    with open(out_dir / "metrics.json", "w", encoding="utf-8") as f:
+        json.dump(res, f, indent=2)
+    return res
 
 
 def run_model(model: Model, records: list[dict], out_dir: Path, n_boot: int = 1000, seed: int = 42) -> dict:
     out_dir.mkdir(parents=True, exist_ok=True)
     sp = by_split(records)
     model.fit(sp["train"], sp["val"])
-    sv, _ = model.predict(sp["val"])
-    th = tune_all_thresholds(sp["val"], sv)
+    sv, gv = model.predict(sp["val"])
     st, gt = model.predict(sp["test"])
-    res = {"model": model.name, **evaluate(sp["test"], st, gt, th, n_boot=n_boot, seed=seed)}
-    save_predictions(out_dir / "test_predictions.npz", sp["test"], st, gt, th)
-    with open(out_dir / "metrics.json", "w", encoding="utf-8") as f:
-        json.dump(res, f, indent=2)
-    return res
+    return _finish(model.name, out_dir, sp, sv, gv, st, gt, n_boot, seed)
 
 
 # ------------------------------------------------------------------------- reports

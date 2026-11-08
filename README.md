@@ -14,7 +14,7 @@ the code comments so each piece can be traced back.
 | Phase | Months | What | Status |
 |---|---|---|---|
 | 1 | 1-2 | Project setup, taxonomy, data pipeline, check set, kappa, M0 baseline | **Done** |
-| 2 | 3-4 | M1 (XGBoost + lexicon), M2 (MiniLM + MLP), M3 (role-aware GRU-attention), dual-role baseline, ablations | **Implemented** |
+| 2 | 3-4 | M1 (XGBoost + lexicon), M2 (MiniLM + MLP), M3 (role-aware GRU-attention), dual-role baseline, ablations | **Done** |
 | 3 | 4-5 | Grounding audit, cross-genre transfer, human vs LLM, donation model | Planned |
 | 4 | 5-6 | ONNX int8, FastAPI, Gradio, Docker, Hugging Face Space, user study | Planned |
 
@@ -114,6 +114,17 @@ python -m tacticlens.cli train m3 --variant no-context
 python -m tacticlens.cli train m3 --variant no-adv
 python -m tacticlens.cli train m3 --variant no-mil
 ```
+
+Repeat key runs with other seeds (`--seed 1`, `--seed 2`; saved as `<model>_s1` ...) and get one table
+of mean ± SD over seeds in `reports/summary.md`:
+
+```cmd
+python -m tacticlens.cli summarize
+python -m tacticlens.cli rescore            :: re-tune thresholds + re-score saved models, no retraining
+```
+
+**Final model:** `m3_no-context` (M3 without the context window, keeping the role head). Over 3
+seeds it is at least as good as full M3 and 3x faster; see the phase 2 results doc for the ablations.
 
 Is M3 better? Paired bootstrap over dialogues (FR-EVA-02):
 

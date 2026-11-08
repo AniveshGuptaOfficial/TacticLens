@@ -90,6 +90,12 @@ def _m3_dir(args) -> str:
     return base + ("_nolex" if getattr(args, "no_lexical", False) else "")
 
 
+def _seed_suffix(args) -> str:
+    """Runs with --seed go to <name>_s<seed>; the default run (config seed) keeps the plain name."""
+    s = getattr(args, "seed", None)
+    return f"_s{s}" if s is not None else ""
+
+
 M3_GRID = {"mil_weight": [0.3, 1.0], "pos_clip": [5.0, 20.0], "dropout": [0.2, 0.4]}
 M3_BEST = Path("configs") / "m3_best.json"
 
@@ -183,9 +189,10 @@ def cmd_train(args) -> None:
     """Train + evaluate one model the same way as all others (models/common.py)."""
     from .models.common import results_markdown, run_model
     root, cfg, tax = _paths(args)
-    seed = cfg.get("seed", 42)
+    seed = args.seed if getattr(args, "seed", None) is not None else cfg.get("seed", 42)
     model = _build_model(args.model, root, args, seed)
     name = _m3_dir(args) if args.model == "m3" else _model_dir_name(args.model, "full", getattr(args, "no_weak", False))
+    name += _seed_suffix(args)
     out = root / "models" / name
     res = run_model(model, _records(root), out, n_boot=args.boot, seed=seed)
     md = results_markdown(res, {t: tax.name(t) for t in tax.all_label_ids})
@@ -224,9 +231,70 @@ def cmd_compare(args) -> None:
     for level in ("turn", "dialogue"):
         r = paired_bootstrap(test, pa, pb, level=level, n_boot=args.boot)
         lo, hi = r["diff_ci95"]
-        verdict = "B better (p < 0.05)" if r["p_b_not_better"] < 0.05 else "no significant gain"
+        p = r["p_b_not_better"]
+        verdict = (f"{args.b} better (p < 0.05)" if p < 0.05 else
+                   f"{args.a} better (p < 0.05)" if p > 0.95 else "no significant difference")
         print(f"{level:9s} n={r['n']:,}  {args.a} {r['macro_f1_a']:.3f}  vs  {args.b} {r['macro_f1_b']:.3f}  "
               f"diff {r['diff']:+.3f} (95% CI {lo:+.3f} to {hi:+.3f}), p={r['p_b_not_better']:.3f}  -> {verdict}")
+
+
+def cmd_rescore(args) -> None:
+    """Re-tune thresholds and re-score every saved model (or the ones named) without retraining."""
+    from .models.common import results_markdown, score_saved
+    root, _, tax = _paths(args)
+    recs = _records(root)
+    dirs = [root / "models" / n for n in args.models] if args.models else sorted(
+        p.parent for p in (root / "models").glob("*/val_predictions.npz"))
+    for d in dirs:
+        if not (d / "val_predictions.npz").exists():
+            print(f"{d.name}: no val_predictions.npz (trained before rescore existed) - retrain it once")
+            continue
+        old = json.loads((d / "metrics.json").read_text(encoding="utf-8")).get("model", d.name)
+        res = score_saved(old, d, recs, n_boot=args.boot)
+        md = results_markdown(res, {t: tax.name(t) for t in tax.all_label_ids})
+        (root / "reports" / f"{d.name}_results.md").write_text(md, encoding="utf-8")
+        t, g = res.get("turn", {}).get("macro_f1"), res.get("dialogue", {}).get("macro_f1")
+        print(f"{d.name:22s} turn {t if t is None else round(t, 3)}  dialogue {g if g is None else round(g, 3)}")
+
+
+def summarize_runs(models_dir: Path) -> list[dict]:
+    """Every models/<name>/metrics.json, grouped over seeds (<name>, <name>_s1, <name>_s2 ...)."""
+    import re
+    import statistics
+    groups: dict[str, list[dict]] = {}
+    for f in sorted(models_dir.glob("*/metrics.json")):
+        base = re.sub(r"_s\d+$", "", f.parent.name)
+        groups.setdefault(base, []).append(json.loads(f.read_text(encoding="utf-8")))
+    rows = []
+    for name, runs in groups.items():
+        row = {"model": name, "seeds": len(runs)}
+        for level in ("turn", "dialogue", "genre"):
+            v = [r[level]["macro_f1"] for r in runs if r.get(level)]
+            if v:
+                row[level] = statistics.mean(v)
+                row[level + "_sd"] = statistics.stdev(v) if len(v) > 1 else None
+        rows.append(row)
+    return rows
+
+
+def cmd_summarize(args) -> None:
+    root, _, _ = _paths(args)
+    rows = summarize_runs(root / "models")
+
+    def cell(r, k):
+        if k not in r:
+            return "-"
+        sd = r.get(k + "_sd")
+        return f"{r[k]:.3f}" + (f" ± {sd:.3f}" if sd is not None else "")
+
+    lines = ["# All runs (macro-F1, mean ± SD over seeds)", "",
+             "| Model | Seeds | Turn | Dialogue | Genre |", "|---|---|---|---|---|"]
+    lines += [f"| {r['model']} | {r['seeds']} | {cell(r, 'turn')} | {cell(r, 'dialogue')} | {cell(r, 'genre')} |"
+              for r in rows]
+    md = "\n".join(lines) + "\n"
+    (root / "reports").mkdir(exist_ok=True)
+    (root / "reports" / "summary.md").write_text(md, encoding="utf-8")
+    print(md)
 
 
 def cmd_llm_overlap(args) -> None:
@@ -290,6 +358,7 @@ def main(argv=None) -> None:
     p.add_argument("--mil-weight", type=float, default=None, help="m3: weight of the MentalManip MIL loss")
     p.add_argument("--pos-clip", type=float, default=None, help="m3: cap on the rare-class positive weight")
     p.add_argument("--dropout", type=float, default=None, help="m3: dropout")
+    p.add_argument("--seed", type=int, default=None, help="training seed; results go to <model>_s<seed>")
     p.add_argument("--no-weak", action="store_true", help="m0-m2: don't use MentalManip dialogue labels as weak turn labels")
     p.add_argument("--boot", type=int, default=1000)
     p.set_defaults(fn=cmd_train)
@@ -299,6 +368,11 @@ def main(argv=None) -> None:
     p.add_argument("--restart", action="store_true", help="ignore earlier sweep results")
     p.set_defaults(fn=cmd_sweep_m3)
     sub.add_parser("embed").set_defaults(fn=cmd_embed)
+    sub.add_parser("summarize", help="table of every trained model, mean ± SD over seeds").set_defaults(fn=cmd_summarize)
+    p = sub.add_parser("rescore", help="re-tune thresholds + re-score saved models without retraining")
+    p.add_argument("models", nargs="*", help="folders under models/ (default: all that have val predictions)")
+    p.add_argument("--boot", type=int, default=1000)
+    p.set_defaults(fn=cmd_rescore)
     p = sub.add_parser("compare", help="paired bootstrap between two trained models")
     p.add_argument("a", help="baseline folder under models/, e.g. m2")
     p.add_argument("b", help="new model folder under models/, e.g. m3_full")

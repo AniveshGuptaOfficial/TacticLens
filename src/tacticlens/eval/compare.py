@@ -2,7 +2,8 @@
 
 Both models' saved test predictions are aligned on (dialogue_id, turn_id). Each bootstrap
 round resamples dialogues once and scores both models on that same sample, so the
-difference is paired. p = share of rounds where the difference is <= 0 (one-sided: B > A).
+difference is paired. p_b_not_better = share of rounds where B - A <= 0, so p < 0.05 means B is
+better and p > 0.95 means A is better (each one-sided at 5%).
 """
 
 from __future__ import annotations
@@ -12,7 +13,7 @@ from pathlib import Path
 import numpy as np
 from sklearn.metrics import f1_score
 
-from ..models.common import TACTICS, dialogue_pool, turn_labels
+from ..models.common import TACTICS, dialogue_pool, threshold_pair, turn_labels
 
 
 def _load(path: Path) -> dict:
@@ -34,7 +35,8 @@ def paired_bootstrap(test: list[dict], pred_a: Path, pred_b: Path, level: str = 
     key = {(r["dialogue_id"], int(r["turn_id"])): r for r in test}
     recs = [key[(a["dialogue_id"][i], int(a["turn_id"][i]))] for i in ia]
     sa, sb = a["tactic_scores"][ia], b["tactic_scores"][ib]
-    pa, pb = (sa >= a["thresholds"]).astype(int), (sb >= b["thresholds"]).astype(int)
+    (ta_t, ta_d), (tb_t, tb_d) = threshold_pair(a["thresholds"]), threshold_pair(b["thresholds"])
+    pa, pb = (sa >= ta_t).astype(int), (sb >= tb_t).astype(int)
 
     if level == "turn":
         m = np.array([r["label_level"] == "turn" for r in recs])
@@ -44,7 +46,7 @@ def paired_bootstrap(test: list[dict], pred_a: Path, pred_b: Path, level: str = 
     else:
         dids, poolA, Y = dialogue_pool(recs, sa)
         _, poolB, _ = dialogue_pool(recs, sb)
-        A, B = (poolA >= a["thresholds"]).astype(int), (poolB >= b["thresholds"]).astype(int)
+        A, B = (poolA >= ta_d).astype(int), (poolB >= tb_d).astype(int)
         groups = np.array(dids)
     present = [j for j in range(len(TACTICS)) if Y[:, j].sum() > 0]
 

@@ -17,14 +17,14 @@ macro-F1 **0.585** (95% CI 0.533 to 0.629), micro-F1 0.693, n = 923
 
 ## Tactics, dialogue level (MentalManip test dialogues, max over turns)
 
-macro-F1 **0.041** (95% CI 0.024 to 0.059), micro-F1 0.053, n = 600
+macro-F1 **0.184** (95% CI 0.161 to 0.204), micro-F1 0.280, n = 600
 
 | Tactic | Name | Precision | Recall | F1 | AUC-PR | Support |
 |---|---|---|---|---|---|---|
-| T6 | Reward / reciprocity | 0.500 | 0.044 | 0.081 | 0.300 | 136 |
-| T7 | Flattery / liking | 0.256 | 0.081 | 0.123 | 0.255 | 136 |
+| T6 | Reward / reciprocity | 0.263 | 0.846 | 0.401 | 0.300 | 136 |
+| T7 | Flattery / liking | 0.255 | 0.544 | 0.347 | 0.255 | 136 |
 | T8 | Guilt / obligation | 0.000 | 0.000 | 0.000 | 0.033 | 20 |
-| T9 | Threat / intimidation | 0.000 | 0.000 | 0.000 | 0.120 | 61 |
+| T9 | Threat / intimidation | 0.112 | 0.361 | 0.171 | 0.120 | 61 |
 | T10 | Distortion and blame | 0.000 | 0.000 | 0.000 | 0.277 | 166 |
 
 ## Genre (every test turn)
