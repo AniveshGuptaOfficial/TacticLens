@@ -10,3 +10,5 @@ data/processed/*
 !data/processed/.gitkeep
 models/*
 !models/.gitkeep
+space/
+reports/study_feedback.csv

@@ -27,6 +27,23 @@ macro-F1 **0.304** (95% CI 0.281 to 0.325), micro-F1 0.391, n = 600
 | T9 | Threat / intimidation | 0.149 | 0.656 | 0.243 | 0.205 | 61 |
 | T10 | Distortion and blame | 0.327 | 0.807 | 0.465 | 0.363 | 166 |
 
+## Accuracy-style measures
+
+Accuracy counts correct decisions, so it is high whenever most answers are "no". The last column is what a model
+that always gives the most common answer scores; read each accuracy against it, and the F1 tables above for the hard task.
+
+| Measure | Score (95% CI) | Always-most-common baseline |
+|---|---|---|
+| Tactic yes/no decisions, single turns (per-label accuracy) | 94.4% (93.6% to 95.1%) | 92.3% |
+| All tactics right at once, single turns (exact match) | 65.5% (61.0% to 69.9%) | 61.9% |
+| Single turns: uses any tactic (accuracy; F1 73.1%) | 79.2% (76.0% to 82.3%) | 61.9% |
+| Tactic yes/no decisions, MentalManip dialogues (per-label accuracy) | 59.2% (57.3% to 61.1%) | 82.7% |
+| All tactics right at once, MentalManip dialogues (exact match) | 10.8% (8.3% to 13.3%) | 45.8% |
+| MentalManip dialogues: manipulative or not (accuracy; F1 70.1%) | 56.2% (52.0% to 60.2%) | 54.2% |
+| Genre, 4 classes (accuracy) | 78.3% (76.6% to 79.9%) | - |
+| Influence attempt vs neutral, every turn (accuracy; F1 87.8%) | 80.7% | 79.5% |
+| SMS: scam or not (accuracy; F1 97.3%) | 98.8% | 77.3% |
+
 ## Genre (every test turn)
 
 macro-F1 **0.800** (95% CI 0.791 to 0.809), n = 8,331

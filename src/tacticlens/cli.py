@@ -364,6 +364,93 @@ def cmd_donation(args) -> None:
     _write_report(root, "donation.md", report_markdown(results, _names(tax)))
 
 
+ONNX_DIR = Path("models") / "onnx"
+
+
+def _bundle_from_torch(root: Path, model_name: str, tax) -> dict:
+    """Same bundle.json content as export-onnx writes, for running the PyTorch model in the app."""
+    import numpy as np
+
+    from .data.schema import GENRES
+    from .models.common import (
+        TACTICS,
+        by_split,
+        load_predictions,
+        threshold_pair,
+        tune_all_thresholds,
+    )
+    mdir = root / "models" / model_name
+    t1, d1 = threshold_pair(np.load(mdir / "test_predictions.npz")["thresholds"])
+    val = by_split(_records(root))["val"]
+    sv, _ = load_predictions(mdir / "val_predictions.npz", val)
+    th_acc = tune_all_thresholds(val, sv, objective="accuracy")
+    return {"model": model_name, "thresholds": {"balanced": [t1.tolist(), d1.tolist()], "careful": th_acc.tolist()},
+            "tactics": [{"id": t, "name": tax.name(t), "group": tax.group(t)} for t in TACTICS], "genres": list(GENRES)}
+
+
+def _predictor(args):
+    from .serve.predictor import Predictor
+    root, _, tax = _paths(args)
+    if args.engine == "onnx":
+        from .serve.engines import OnnxEngine
+        bdir = root / (args.bundle or ONNX_DIR)
+        if not (bdir / "bundle.json").exists():
+            raise SystemExit(f"{bdir} has no bundle.json: run `python -m tacticlens.cli export-onnx` first")
+        bundle = json.loads((bdir / "bundle.json").read_text(encoding="utf-8"))
+        return Predictor(OnnxEngine(bdir, int8=not args.fp32), bundle)
+    from .serve.engines import TorchEngine
+    return Predictor(TorchEngine(root, args.model), _bundle_from_torch(root, args.model, tax))
+
+
+def cmd_export_onnx(args) -> None:
+    from .serve.export import export_onnx
+    root, _, tax = _paths(args)
+    names = {t: tax.name(t) for t in tax.all_label_ids}
+    groups = {t: tax.group(t) for t in tax.all_label_ids}
+    out = root / (args.out or ONNX_DIR)
+    export_onnx(root, args.model, out, _records(root), names, groups)
+    print(f"ONNX bundle written to {out}")
+
+
+def cmd_eval_onnx(args) -> None:
+    from .serve.export import eval_onnx
+    root, _, _ = _paths(args)
+    _write_report(root, "onnx.md", eval_onnx(root, root / (args.bundle or ONNX_DIR), _records(root), n_boot=args.boot))
+
+
+def cmd_analyze(args) -> None:
+    text = Path(args.file).read_text(encoding="utf-8") if args.file else args.text
+    res = _predictor(args).analyze(text or "", actor=args.actor, mode=args.mode)
+    print(json.dumps(res, indent=2, ensure_ascii=False))
+
+
+def cmd_serve(args) -> None:
+    import uvicorn
+
+    from .serve.api import create_app
+    uvicorn.run(create_app(_predictor(args)), host=args.host, port=args.port)
+
+
+def cmd_ui(args) -> None:
+    from .serve.ui import build_ui
+    root, _, _ = _paths(args)
+    log = root / args.feedback_log if args.feedback_log else None
+    build_ui(_predictor(args), feedback_log=log).launch(server_name=args.host, server_port=args.port, share=args.share)
+
+
+def cmd_bundle_space(args) -> None:
+    from .serve.space import bundle_space
+    root, _, _ = _paths(args)
+    out = bundle_space(root / (args.bundle or ONNX_DIR), Path(__file__).resolve().parent, root / args.out)
+    print(f"Space folder ready: {out}  (test it: cd {args.out} && python app.py)")
+
+
+def cmd_deploy_space(args) -> None:
+    from .serve.space import deploy_space
+    root, _, _ = _paths(args)
+    print("Deployed:", deploy_space(root / args.dir, args.repo, private=args.private))
+
+
 def cmd_rescore(args) -> None:
     """Re-tune thresholds and re-score every saved model (or the ones named) without retraining."""
     from .models.common import results_markdown, score_saved
@@ -517,6 +604,47 @@ def main(argv=None) -> None:
     p = sub.add_parser("donation", help="phase 3: persuader tactics vs donations (P4G)")
     p.add_argument("--model", default=FINAL_MODEL)
     p.set_defaults(fn=cmd_donation)
+    def engine_args(p, port):
+        p.add_argument("--engine", choices=["onnx", "torch"], default="onnx")
+        p.add_argument("--bundle", help="ONNX bundle folder (default models/onnx)")
+        p.add_argument("--fp32", action="store_true", help="use the fp32 ONNX files instead of int8")
+        p.add_argument("--model", default=FINAL_MODEL, help="torch engine: which trained model")
+        if port:
+            p.add_argument("--host", default="127.0.0.1")
+            p.add_argument("--port", type=int, default=port)
+
+    p = sub.add_parser("export-onnx", help="phase 4: export the final model to ONNX (fp32 + int8)")
+    p.add_argument("--model", default=FINAL_MODEL)
+    p.add_argument("--out", help="output folder (default models/onnx)")
+    p.set_defaults(fn=cmd_export_onnx)
+    p = sub.add_parser("eval-onnx", help="phase 4: test-split F1, size and speed of the ONNX model")
+    p.add_argument("--bundle")
+    p.add_argument("--boot", type=int, default=200)
+    p.set_defaults(fn=cmd_eval_onnx)
+    p = sub.add_parser("analyze", help="phase 4: analyse one text from the command line (JSON out)")
+    p.add_argument("text", nargs="?", default="")
+    p.add_argument("--file", help="read the text from a file")
+    p.add_argument("--actor")
+    p.add_argument("--mode", default="balanced", choices=["balanced", "careful"])
+    engine_args(p, None)
+    p.set_defaults(fn=cmd_analyze)
+    p = sub.add_parser("serve", help="phase 4: FastAPI server (POST /analyze; docs at /docs)")
+    engine_args(p, 8000)
+    p.set_defaults(fn=cmd_serve)
+    p = sub.add_parser("ui", help="phase 4: Gradio web UI")
+    engine_args(p, 7860)
+    p.add_argument("--share", action="store_true", help="temporary public gradio.live link")
+    p.add_argument("--feedback-log", help="CSV for user-study feedback, e.g. reports/study_feedback.csv")
+    p.set_defaults(fn=cmd_ui)
+    p = sub.add_parser("bundle-space", help="phase 4: make the Hugging Face Space folder")
+    p.add_argument("--bundle")
+    p.add_argument("--out", default="space")
+    p.set_defaults(fn=cmd_bundle_space)
+    p = sub.add_parser("deploy-space", help="phase 4: upload the Space folder (needs huggingface-cli login)")
+    p.add_argument("--repo", required=True, help="your-username/tacticlens")
+    p.add_argument("--dir", default="space")
+    p.add_argument("--private", action="store_true")
+    p.set_defaults(fn=cmd_deploy_space)
     p = sub.add_parser("rescore", help="re-tune thresholds + re-score saved models without retraining")
     p.add_argument("models", nargs="*", help="folders under models/ (default: all that have val predictions)")
     p.add_argument("--boot", type=int, default=1000)

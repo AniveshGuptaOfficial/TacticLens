@@ -42,14 +42,19 @@ def bootstrap_ci(metric_fn, groups: np.ndarray, n_boot: int = 1000, seed: int = 
 
 
 def tune_thresholds(y_true: np.ndarray, y_score: np.ndarray, grid: np.ndarray | None = None,
-                    n_boot: int = 0, seed: int = 42) -> np.ndarray:
+                    n_boot: int = 0, seed: int = 42, objective: str = "f1") -> np.ndarray:
     """Per-label threshold that maximises F1 on validation data (FR-MOD-07). Default 0.5 if no positives.
 
     With n_boot > 0 the F1 of each candidate threshold is averaged over bootstrap resamples of the
     validation rows before picking the best. With only a handful of positives (T4, T7 ...) the plain
     argmax jumps to whatever threshold happens to fit those few rows; the average is much steadier.
+
+    objective="accuracy" picks the threshold with the most correct yes/no decisions instead, and may
+    choose "never flag" (1.01) when that is what validation data rewards.
     """
     grid = grid if grid is not None else np.linspace(0.05, 0.95, 19)
+    if objective == "accuracy":
+        grid = np.append(grid, 1.01)
     y_true = np.asarray(y_true)
     n = len(y_true)
     W = np.ones((1, n))
@@ -64,7 +69,11 @@ def tune_thresholds(y_true: np.ndarray, y_score: np.ndarray, grid: np.ndarray | 
         tp = W @ (P * y).T  # [boot, grid]
         fp = W @ (P * (1 - y)).T
         fn = W @ y[:, None] - tp
-        denom = 2 * tp + fp + fn
-        f1 = np.divide(2 * tp, denom, out=np.zeros_like(tp), where=denom > 0)
-        th[j] = grid[int(np.argmax(f1.mean(axis=0)))]
+        if objective == "accuracy":
+            tn = W @ ((1 - P) * (1 - y)).T
+            score = (tp + tn) / W.sum(axis=1, keepdims=True)
+        else:
+            denom = 2 * tp + fp + fn
+            score = np.divide(2 * tp, denom, out=np.zeros_like(tp), where=denom > 0)
+        th[j] = grid[int(np.argmax(score.mean(axis=0)))]
     return th

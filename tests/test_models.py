@@ -104,3 +104,31 @@ def test_thresholds_per_level_and_rescore(prepared, tmp_path):
     s = np.array([[0.9], [0.2], [0.6], [0.1], [0.7], [0.3]])
     t = tune_thresholds(y, s, n_boot=100)
     assert 0.3 < t[0] <= 0.7
+
+
+def test_accuracy_measures(prepared, tmp_path):
+    from tacticlens.models.common import results_markdown, run_model
+    from tacticlens.models.m0 import M0
+    recs, tax = prepared
+    res = run_model(M0(), recs, tmp_path / "m0", n_boot=20)
+    a = res["turn"]["accuracy"]
+    assert 0 <= a["exact_match"] <= a["label_accuracy"] <= 1
+    assert a["label_accuracy_ci95"][0] <= a["label_accuracy"] <= a["label_accuracy_ci95"][1]
+    assert {"accuracy", "f1", "majority_baseline"} <= set(a["any_tactic"])
+    assert "accuracy" in res["dialogue"]["accuracy"]["any_tactic"]
+    assert 0 <= res["genre"]["accuracy"] <= 1 and "sms_scam_detection" in res["genre"]
+    md = results_markdown(res, {t: tax.name(t) for t in tax.all_label_ids})
+    assert "Accuracy-style measures" in md and "SMS: scam or not" in md
+    op = res["accuracy_operating_point"]
+    assert op["turn"]["label_accuracy"] >= 0 and "tuned on validation for accuracy" in md
+
+
+def test_accuracy_threshold_objective():
+    import numpy as np
+
+    from tacticlens.eval.metrics import tune_thresholds
+    # one rare positive scored lower than several negatives: F1 flags it, accuracy prefers "never flag"
+    y = np.array([[1], [0], [0], [0], [0], [0]])
+    s = np.array([[0.30], [0.60], [0.70], [0.65], [0.10], [0.20]])
+    assert tune_thresholds(y, s)[0] <= 0.3
+    assert tune_thresholds(y, s, objective="accuracy")[0] > 0.7

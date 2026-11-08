@@ -16,7 +16,7 @@ the code comments so each piece can be traced back.
 | 1 | 1-2 | Project setup, taxonomy, data pipeline, check set, kappa, M0 baseline | **Done** |
 | 2 | 3-4 | M1 (XGBoost + lexicon), M2 (MiniLM + MLP), M3 (role-aware GRU-attention), dual-role baseline, ablations | **Done** |
 | 3 | 4-5 | Grounding audit, cross-genre transfer, human vs LLM, donation model | **Implemented** |
-| 4 | 5-6 | ONNX int8, FastAPI, Gradio, Docker, Hugging Face Space, user study | Planned |
+| 4 | 5-6 | ONNX int8, FastAPI, Gradio, Docker, Hugging Face Space, user study | **Implemented** |
 
 ## Folder layout
 
@@ -149,6 +149,27 @@ python -m tacticlens.cli human-vs-llm                                          :
 python -m tacticlens.cli human-vs-llm --label spam
 python -m tacticlens.cli donation                                              :: O7 tactics vs donations
 ```
+
+## Phase 4: the app
+
+Install the app libraries once: `pip install -r requirements-app.txt`
+
+```cmd
+python -m tacticlens.cli export-onnx          :: final model -> models/onnx (fp32 + int8, tokenizer, thresholds)
+python -m tacticlens.cli eval-onnx            :: reports/onnx.md: F1, size and speed, int8 vs PyTorch
+python -m tacticlens.cli analyze "URGENT: your account is locked, verify now at http://x.example"
+python -m tacticlens.cli ui                   :: web UI at http://127.0.0.1:7860
+python -m tacticlens.cli serve                :: HTTP API at http://127.0.0.1:8000/docs
+python -m tacticlens.cli bundle-space         :: space/ folder for Hugging Face (int8 ONNX, no PyTorch)
+huggingface-cli login
+python -m tacticlens.cli deploy-space --repo YOUR-HF-NAME/tacticlens
+```
+
+Two modes, both with thresholds tuned on validation data: **balanced** (F1, the reported results)
+and **careful** (accuracy, fewer false alarms). For each tactic the app shows the sentence that
+scores highest on its own as evidence. Conversations are pasted as `Name: text` lines; give the
+speaker to check to get role-aware results. User-study protocol: `docs/user_study.md`
+(run the UI with `--feedback-log reports/study_feedback.csv`). Docker: see the `Dockerfile`.
 
 ## First checks to do (from the SRS)
 
