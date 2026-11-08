@@ -87,7 +87,8 @@ def _model_dir_name(model: str, variant: str, no_weak: bool = False) -> str:
 
 def _m3_dir(args) -> str:
     base = _model_dir_name("m3", args.variant)
-    return base + ("_nolex" if getattr(args, "no_lexical", False) else "")
+    return (base + ("_nolex" if getattr(args, "no_lexical", False) else "")
+            + ("_ev" if getattr(args, "evidence_aug", False) else ""))
 
 
 def _seed_suffix(args) -> str:
@@ -181,7 +182,7 @@ def _build_model(model: str, root: Path, args, seed: int):
             raise SystemExit(str(e)) from e
         hp = _m3_hparams(root, args)
         return M3(cache, variant=args.variant, seed=seed, epochs=args.epochs, threads=args.threads,
-                  lexical=not args.no_lexical, **hp)
+                  lexical=not args.no_lexical, evidence_aug=getattr(args, "evidence_aug", False), **hp)
     raise SystemExit(f"unknown model {model}")
 
 
@@ -238,13 +239,138 @@ def cmd_compare(args) -> None:
               f"diff {r['diff']:+.3f} (95% CI {lo:+.3f} to {hi:+.3f}), p={r['p_b_not_better']:.3f}  -> {verdict}")
 
 
+FINAL_MODEL = "m3_no-context_ev"  # M3 without context window, trained with evidence augmentation
+
+
+def _names(tax) -> dict[str, str]:
+    return {t: tax.name(t) for t in tax.all_label_ids}
+
+
+def _write_report(root: Path, name: str, md: str) -> None:
+    (root / "reports").mkdir(exist_ok=True)
+    (root / "reports" / name).write_text(md, encoding="utf-8")
+    print(md)
+
+
+def cmd_grounding(args) -> None:
+    """O5: does each model's tactic score depend on the annotated evidence?"""
+    import pandas as pd
+
+    from .analysis.common import load_model
+    from .analysis.grounding import audit, per_tactic_table, report_markdown, summarize
+    root, _, tax = _paths(args)
+    test = [r for r in _records(root) if r["split"] == "test"]
+    rows, dfs = [], {}
+    for name in args.models:
+        print(f"[{name}] scoring evidence-removed / evidence-only / random-cut versions ...")
+        model, (th_t, _) = load_model(root, name, log=lambda *_: None)
+        df = audit(model, th_t, test)
+        df.insert(0, "model", name)
+        dfs[name] = df
+        rows += summarize(df, name, n_boot=args.boot)
+    (root / "reports").mkdir(exist_ok=True)
+    pd.concat(dfs.values()).to_csv(root / "reports" / "grounding_cases.csv", index=False)
+    _write_report(root, "grounding.md", report_markdown(rows, per_tactic_table(dfs)))
+
+
+def cmd_human_vs_llm(args) -> None:
+    """O6: tactic profile of human- vs LLM-written SMS."""
+    import numpy as np
+
+    from .analysis.common import load_model
+    from .analysis.human_vs_llm import (
+        compare,
+        lexicon_matrix,
+        per_generator,
+        report_markdown,
+        select,
+        tactic_matrix,
+    )
+    root, _, tax = _paths(args)
+    sel = select(_records(root), args.label)
+    if not sel["human"] or not sel["llm"]:
+        raise SystemExit(f"need both human and LLM {args.label} messages; found {len(sel['human'])} and {len(sel['llm'])}")
+    model, (th_t, _) = load_model(root, args.model, log=lambda *_: None)
+    A, B = tactic_matrix(model, th_t, sel["human"]), tactic_matrix(model, th_t, sel["llm"])
+    LA, LB = lexicon_matrix(sel["human"]), lexicon_matrix(sel["llm"])
+    words = {k: np.median([len(r["text"].split()) for r in v]) for k, v in sel.items()}
+    extra = {"tpm_human": A.sum(1).mean(), "tpm_llm": B.sum(1).mean(), "len_human": words["human"], "len_llm": words["llm"]}
+    gens = {"human (Mishra-Soni)": A.mean(0), **per_generator(sel["llm"], B)}
+    md = report_markdown(args.label, {k: len(v) for k, v in sel.items()}, args.model, compare(A, B), compare(LA, LB),
+                         gens, _names(tax), extra)
+    _write_report(root, f"human_vs_llm_{args.label}.md", md)
+
+
+def cmd_transfer(args) -> None:
+    """O4: leave one genre out - train on the others, test on it."""
+    import numpy as np
+
+    from .analysis.transfer import evaluate_genre, logo_records, report_markdown, trained_tactics
+    from .models.common import by_split, load_predictions, run_model
+    root, cfg, tax = _paths(args)
+    seed = cfg.get("seed", 42)
+    recs = _records(root)
+    logo = json.loads((root / "data" / "processed" / "logo_splits.json").read_text(encoding="utf-8"))
+    main_test = by_split(recs)["test"]
+    rows = []
+    for genre in args.genres:
+        sub = logo_records(recs, logo, genre, clean_sources=not args.keep_neutral)
+        sp = by_split(sub)
+        tt = trained_tactics(sp["train"])
+        for mname in args.models:
+            out = root / "models" / f"logo_{genre}_{mname}" if not args.keep_neutral else root / "models" / f"logo_{genre}_{mname}_kn"
+            print(f"[{genre} held out] training {mname} on {len(sp['train']):,} turns ...")
+            if mname == "m3":
+                args.model, args.variant, args.epochs, args.no_lexical = "m3", "no-context", args.epochs, False
+                args.evidence_aug = True  # same recipe as the final model
+            else:
+                args.model, args.no_weak = mname, False
+            model = _build_model(mname, root, args, seed)
+            run_model(model, sub, out, n_boot=args.boot, seed=seed)
+            St, _ = load_predictions(out / "test_predictions.npz", sp["test"])
+            th = np.load(out / "test_predictions.npz")["thresholds"]
+            transfer = evaluate_genre(genre, sp["test"], St, th, tt, n_boot=args.boot)
+            ref_name = FINAL_MODEL if mname == "m3" else mname
+            ref_dir = root / "models" / ref_name
+            ids = {r["dialogue_id"] for r in sp["test"]}
+            ref_test = [r for r in main_test if r["dialogue_id"] in ids]
+            Sr, _ = load_predictions(ref_dir / "test_predictions.npz", ref_test)
+            thr = np.load(ref_dir / "test_predictions.npz")["thresholds"]
+            ind = evaluate_genre(genre, ref_test, Sr, thr, set(transfer["shared"]), n_boot=args.boot)
+            rows.append({"genre": genre, "model": ref_name, "in_domain": ind, "transfer": transfer})
+    _write_report(root, "transfer.md" if not args.keep_neutral else "transfer_keep_neutral.md",
+                  report_markdown(rows, _names(tax), clean_sources=not args.keep_neutral))
+
+
+def cmd_donation(args) -> None:
+    """O7: persuader tactic use vs the persuadee's donation (P4G)."""
+    from .analysis.common import load_model
+    from .analysis.donation import dialogue_table, fit, persuader_ids, report_markdown
+    from .data.io_utils import find_file, read_table
+    root, cfg, tax = _paths(args)
+    recs = _records(root)
+    pcfg = cfg["datasets"]["p4g"]
+    info_path = find_file(resolve(root, pcfg["dir"]), ["*full_info*", "*300_info*", "*info*"], pcfg.get("info_file"))
+    pids = persuader_ids(read_table(info_path) if info_path else None)
+    results = {}
+    gold = dialogue_table(recs, "gold", pids=pids)
+    if len(gold) >= 30:
+        results["gold labels (annotated dialogues)"] = fit(gold)
+    model, (th_t, _) = load_model(root, args.model, log=lambda *_: None)
+    pred = dialogue_table(recs, "model", model=model, th_turn=th_t, pids=pids)
+    results[f"{args.model} detections (all dialogues)"] = fit(pred)
+    (root / "reports").mkdir(exist_ok=True)
+    pred.to_csv(root / "reports" / "donation_dialogues.csv", index=False)
+    _write_report(root, "donation.md", report_markdown(results, _names(tax)))
+
+
 def cmd_rescore(args) -> None:
     """Re-tune thresholds and re-score every saved model (or the ones named) without retraining."""
     from .models.common import results_markdown, score_saved
     root, _, tax = _paths(args)
     recs = _records(root)
     dirs = [root / "models" / n for n in args.models] if args.models else sorted(
-        p.parent for p in (root / "models").glob("*/val_predictions.npz"))
+        p.parent for p in (root / "models").glob("*/val_predictions.npz") if not p.parent.name.startswith("logo_"))
     for d in dirs:
         if not (d / "val_predictions.npz").exists():
             print(f"{d.name}: no val_predictions.npz (trained before rescore existed) - retrain it once")
@@ -263,6 +389,8 @@ def summarize_runs(models_dir: Path) -> list[dict]:
     import statistics
     groups: dict[str, list[dict]] = {}
     for f in sorted(models_dir.glob("*/metrics.json")):
+        if f.parent.name.startswith("logo_"):  # transfer runs have their own test sets
+            continue
         base = re.sub(r"_s\d+$", "", f.parent.name)
         groups.setdefault(base, []).append(json.loads(f.read_text(encoding="utf-8")))
     rows = []
@@ -354,6 +482,7 @@ def main(argv=None) -> None:
     p.add_argument("--variant", default="full", help="m3 only: full, no-role, no-context, no-adv, no-mil, dual-role")
     p.add_argument("--epochs", type=int, default=40, help="m3: max epochs (early stopping after 5 without gain)")
     p.add_argument("--no-lexical", action="store_true", help="m3: MiniLM embedding only, no TF-IDF-SVD features")
+    p.add_argument("--evidence-aug", action="store_true", help="m3: add evidence-only training turns (saved as <name>_ev)")
     p.add_argument("--threads", type=int, default=None, help="CPU threads for PyTorch (default: all)")
     p.add_argument("--mil-weight", type=float, default=None, help="m3: weight of the MentalManip MIL loss")
     p.add_argument("--pos-clip", type=float, default=None, help="m3: cap on the rare-class positive weight")
@@ -369,6 +498,25 @@ def main(argv=None) -> None:
     p.set_defaults(fn=cmd_sweep_m3)
     sub.add_parser("embed").set_defaults(fn=cmd_embed)
     sub.add_parser("summarize", help="table of every trained model, mean ± SD over seeds").set_defaults(fn=cmd_summarize)
+    p = sub.add_parser("grounding", help="phase 3: does the tactic score depend on the annotated evidence?")
+    p.add_argument("models", nargs="*", default=["m0", FINAL_MODEL], help="folders under models/ (M0 or M3 runs)")
+    p.add_argument("--boot", type=int, default=1000)
+    p.set_defaults(fn=cmd_grounding)
+    p = sub.add_parser("human-vs-llm", help="phase 3: tactic profile of human vs LLM-written SMS")
+    p.add_argument("--model", default=FINAL_MODEL)
+    p.add_argument("--label", default="smishing", choices=["smishing", "spam"])
+    p.set_defaults(fn=cmd_human_vs_llm)
+    p = sub.add_parser("transfer", help="phase 3: leave one genre out (trains 1 model per genre and model)")
+    p.add_argument("--genres", nargs="*", default=["persuasion", "manipulation", "scam"])
+    p.add_argument("--models", nargs="*", default=["m0", "m3"], choices=["m0", "m3"])
+    p.add_argument("--keep-neutral", action="store_true", help="keep held-out datasets' neutral dialogues in training")
+    p.add_argument("--epochs", type=int, default=40)
+    p.add_argument("--threads", type=int, default=None)
+    p.add_argument("--boot", type=int, default=1000)
+    p.set_defaults(fn=cmd_transfer)
+    p = sub.add_parser("donation", help="phase 3: persuader tactics vs donations (P4G)")
+    p.add_argument("--model", default=FINAL_MODEL)
+    p.set_defaults(fn=cmd_donation)
     p = sub.add_parser("rescore", help="re-tune thresholds + re-score saved models without retraining")
     p.add_argument("models", nargs="*", help="folders under models/ (default: all that have val predictions)")
     p.add_argument("--boot", type=int, default=1000)

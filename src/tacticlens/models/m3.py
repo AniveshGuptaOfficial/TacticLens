@@ -47,7 +47,7 @@ from sklearn.metrics import average_precision_score
 from ..data.schema import GENRES
 from .common import TACTICS
 from .embed import EmbeddingCache
-from .m3_data import DOMAINS, batches, build_dialogues, pad_batch, pos_weights
+from .m3_data import DOMAINS, batches, build_dialogues, evidence_records, pad_batch, pos_weights
 
 
 class LexicalSVD:
@@ -190,12 +190,14 @@ class M3:
                  epochs: int = 40, batch_size: int = 32, lr: float = 1e-3, patience: int = 5, lam_max: float = 0.3,
                  weights: dict | None = None, threads: int | None = None, lexical: bool = True, lexical_dim: int = 256,
                  role_dropout: float = 0.3, mil_weight: float | None = None, pos_clip: float = 20.0,
-                 dropout: float = 0.2, lexical_model: "LexicalSVD | None" = None, log=print):
+                 dropout: float = 0.2, lexical_model: "LexicalSVD | None" = None, evidence_aug: bool = False,
+                 log=print):
         self.cache = EmbeddingCache(cache_dir, encoder=encoder)
         self.variant, self.seed, self.d = variant, seed, d
         self.lexical, self.lexical_dim, self.role_dropout = lexical, lexical_dim, role_dropout
         self.lex = None
         self.pos_clip, self.dropout = pos_clip, dropout
+        self.evidence_aug = evidence_aug
         self._prefit_lex = lexical_model  # a LexicalSVD already fitted on the same training turns (sweeps reuse it)
         self.epochs, self.batch_size, self.lr, self.patience, self.lam_max = epochs, batch_size, lr, patience, lam_max
         self.w = {"mil": 1.0, "role": 0.2, "genre": 0.5, "adv": 0.2, **(weights or {})}
@@ -265,6 +267,10 @@ class M3:
     def fit(self, train: list[dict], val: list[dict]) -> None:
         torch.manual_seed(self.seed)
         rng = np.random.default_rng(self.seed)
+        if self.evidence_aug:
+            extra = evidence_records(train)
+            self.log(f"  evidence augmentation: +{len(extra):,} evidence-only training turns")
+            train = train + extra
         if self.lexical and self._prefit_lex is not None:
             self.lex = self._prefit_lex
         elif self.lexical:
@@ -341,6 +347,23 @@ class M3:
                 pickle.dump(self.lex, f)
         cfg = {"variant": self.variant, "d": self.d, "in_dim": proj.in_features, "lexical": self.lex is not None,
                "role_dropout": self.role_dropout, "pos_clip": self.pos_clip, "dropout": self.dropout,
+               "evidence_aug": self.evidence_aug,
                "encoder": self.cache.model_name, "weights": self.w, "best_val_map": getattr(self, "best_val", None),
                "history": getattr(self, "history", [])}
         (out_dir / "m3_config.json").write_text(json.dumps(cfg, indent=2), encoding="utf-8")
+
+    @classmethod
+    def load(cls, model_dir: Path, cache_dir: Path, encoder=None, log=print) -> "M3":
+        """Rebuild a model saved by save(), ready to predict (phase-3 analyses, the app)."""
+        model_dir = Path(model_dir)
+        cfg = json.loads((model_dir / "m3_config.json").read_text(encoding="utf-8"))
+        m = cls(cache_dir, variant=cfg["variant"], d=cfg["d"], encoder=encoder, lexical=cfg["lexical"],
+                dropout=cfg.get("dropout", 0.2), log=log)
+        if cfg["lexical"]:
+            import pickle
+            with open(model_dir / "lexical_svd.pkl", "rb") as f:
+                m.lex = pickle.load(f)
+        m.net = M3Net(cfg["in_dim"], d=cfg["d"], variant=cfg["variant"], dropout=cfg.get("dropout", 0.2))
+        m.net.load_state_dict(torch.load(model_dir / "m3.pt", map_location="cpu"))
+        m.net.eval()
+        return m

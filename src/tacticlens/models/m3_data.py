@@ -55,6 +55,33 @@ def build_dialogues(records: list[dict], row_of_text) -> list[dict]:
     return items
 
 
+def evidence_records(records: list[dict], min_words: int = 3) -> list[dict]:
+    """Extra training turns made of annotated evidence alone (the "evidence-span" signal).
+
+    M3 sees a turn only through one frozen sentence embedding, so it cannot be told directly
+    which words matter. Instead every evidence span of a labelled training turn (a PsyScam
+    quote fragment, a P4G strategy sentence) becomes its own one-turn example labelled with the
+    tactics that span is evidence for. The model then has to recognise each tactic from its
+    evidence without the rest of the turn around it.
+    """
+    out = []
+    for r in records:
+        if r.get("label_level") != "turn" or not r.get("spans"):
+            continue
+        by_span: dict[tuple[int, int], set[str]] = {}
+        for s in r["spans"]:
+            if s["tactic"] in TACTICS:  # skip flagged extras such as X_SOCIAL_PROOF
+                by_span.setdefault((s["start"], s["end"]), set()).add(s["tactic"])
+        for k, ((a, b), tacs) in enumerate(sorted(by_span.items())):
+            text = " ".join(r["text"][a:b].split())
+            if len(text.split()) < min_words:
+                continue
+            out.append({**r, "dialogue_id": f"{r['dialogue_id']}#ev{r['turn_id']}.{k}", "turn_id": 0, "text": text,
+                        "tactics": sorted(tacs, key=lambda t: int(t[1:])), "spans": [],
+                        "meta": {**(r.get("meta") or {}), "evidence_of": r["dialogue_id"]}})
+    return out
+
+
 def pad_batch(items: list[dict]) -> dict[str, np.ndarray]:
     """Right-pad a list of dialogues to the longest one. `mask` marks real turns."""
     B, T, K = len(items), max(len(it["emb_idx"]) for it in items), len(TACTICS)

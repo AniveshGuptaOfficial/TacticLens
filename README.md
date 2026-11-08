@@ -15,7 +15,7 @@ the code comments so each piece can be traced back.
 |---|---|---|---|
 | 1 | 1-2 | Project setup, taxonomy, data pipeline, check set, kappa, M0 baseline | **Done** |
 | 2 | 3-4 | M1 (XGBoost + lexicon), M2 (MiniLM + MLP), M3 (role-aware GRU-attention), dual-role baseline, ablations | **Done** |
-| 3 | 4-5 | Grounding audit, cross-genre transfer, human vs LLM, donation model | Planned |
+| 3 | 4-5 | Grounding audit, cross-genre transfer, human vs LLM, donation model | **Implemented** |
 | 4 | 5-6 | ONNX int8, FastAPI, Gradio, Docker, Hugging Face Space, user study | Planned |
 
 ## Folder layout
@@ -123,8 +123,9 @@ python -m tacticlens.cli summarize
 python -m tacticlens.cli rescore            :: re-tune thresholds + re-score saved models, no retraining
 ```
 
-**Final model:** `m3_no-context` (M3 without the context window, keeping the role head). Over 3
-seeds it is at least as good as full M3 and 3x faster; see the phase 2 results doc for the ablations.
+**Final model:** `m3_no-context_ev`: M3 without the context window (keeps the role head), trained
+with evidence augmentation (`--variant no-context --evidence-aug`). Over 3 seeds it is at least as good
+as full M3, 3x faster, and the best grounded in the annotated evidence (phase 2 and 3 results docs).
 
 Is M3 better? Paired bootstrap over dialogues (FR-EVA-02):
 
@@ -132,6 +133,21 @@ Is M3 better? Paired bootstrap over dialogues (FR-EVA-02):
 python -m tacticlens.cli compare m2 m3_full
 python -m tacticlens.cli compare dual_role m3_full
 python -m tacticlens.cli compare m3_no-role m3_full       :: AC-03: does role help?
+```
+
+## Phase 3: analyses
+
+All use the final model (`m3_no-context_ev`) unless you name another trained model. Reports go to `reports/`.
+
+```cmd
+:: evidence-span training: M3 also learns from evidence-only turns (saved as m3_no-context_ev)
+python -m tacticlens.cli train m3 --variant no-context --evidence-aug
+
+python -m tacticlens.cli grounding m0 m3_full m3_no-context m3_no-context_ev   :: O5 grounding audit
+python -m tacticlens.cli transfer                                              :: O4 leave one genre out (~15 min)
+python -m tacticlens.cli human-vs-llm                                          :: O6 human vs LLM smishing
+python -m tacticlens.cli human-vs-llm --label spam
+python -m tacticlens.cli donation                                              :: O7 tactics vs donations
 ```
 
 ## First checks to do (from the SRS)

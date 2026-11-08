@@ -76,3 +76,19 @@ def test_m3_hparams_from_best_file_and_flags(tmp_path):
     (tmp_path / M3_BEST).parent.mkdir(parents=True)
     (tmp_path / M3_BEST).write_text(json.dumps({"params": {"mil_weight": 0.3, "pos_clip": 5.0, "dropout": 0.2}}))
     assert _m3_hparams(tmp_path, args) == {"mil_weight": 0.3, "pos_clip": 5.0, "dropout": 0.3}  # flag wins
+
+
+def test_m3_save_load_roundtrip_and_evidence_aug(prepared, tmp_path):
+    from tacticlens.models.common import by_split
+    from tacticlens.models.m3 import M3
+    recs, _ = prepared
+    sp = by_split(recs)
+    enc = fake_encoder(64)
+    m = M3(tmp_path / "emb", encoder=enc, epochs=2, d=32, lexical_dim=16, variant="no-context", evidence_aug=True,
+           log=lambda *_: None)
+    m.fit(sp["train"], sp["val"])
+    m.save(tmp_path / "m3")
+    m2 = M3.load(tmp_path / "m3", tmp_path / "emb", encoder=enc, log=lambda *_: None)
+    s1, g1 = m.predict(sp["test"])
+    s2, g2 = m2.predict(sp["test"])
+    assert np.allclose(s1, s2, atol=1e-5) and np.allclose(g1, g2, atol=1e-5)
