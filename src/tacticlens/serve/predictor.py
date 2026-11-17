@@ -13,6 +13,15 @@ turns as well, and the grounding audit found its evidence alone is enough for it
 
 Whole-conversation result (2+ turns): max over turns against the dialogue-level thresholds,
 tuned on MentalManip conversations.
+
+Possible signals: a tactic found only at conversation level with a pooled score below CONV_ONLY_MIN
+is listed as a possible signal in both modes, so a weak whole-conversation score cannot set the verdict.
+In careful mode, a tactic that misses the careful cutoff but reaches the
+balanced one is listed separately as a possible signal. It never changes the verdict's group.
+Careful mode switches some tactics off entirely (cutoff 1.01: never flagged), so without this an
+interpersonal-manipulation chat would often come back as "No influence tactic found". At the
+conversation level the balanced cutoffs for reward and flattery are very low (0.15, 0.40), so a
+pooled score must also reach POSSIBLE_FLOOR to count.
 """
 
 from __future__ import annotations
@@ -29,6 +38,9 @@ VERDICTS = {
     "legitimate": "Persuasion with legitimate appeals",
     None: "No influence tactic found",
 }
+POSSIBLE_VERDICT = "No clear tactic, but possible signals"
+POSSIBLE_FLOOR = 0.5  # minimum pooled conversation score for a possible signal
+CONV_ONLY_MIN = 0.5  # a tactic found only at conversation level (no turn passes) needs this to count
 DISCLAIMER = ("TacticLens is a research prototype. It flags patterns a model learned from three research "
               "datasets; it can be wrong and is not proof of intent. Use your own judgement.")
 
@@ -50,7 +62,7 @@ class Predictor:
     def analyze(self, text: str, actor: str | None = None, mode: str = "balanced", evidence: bool = True) -> dict:
         turns = parse_conversation(text)
         if not turns:
-            return {"turns": [], "verdict": VERDICTS[None], "summary": [], "genre": None, "disclaimer": DISCLAIMER,
+            return {"turns": [], "verdict": VERDICTS[None], "summary": [], "possible": [], "genre": None, "disclaimer": DISCLAIMER,
                     "mode": mode}
         th_t, th_d = self.th.get(mode, self.th["balanced"])
         roles = roles_for(turns, actor)
@@ -60,6 +72,9 @@ class Predictor:
         R = np.asarray(out["role"], dtype=float)
 
         hits = [[j for j in range(len(self.ids)) if P[i, j] >= th_t[j]] for i in range(len(turns))]
+        bal_t, bal_d = self.th["balanced"] if mode != "balanced" and "balanced" in self.th else (None, None)
+        maybe = [[j for j in range(len(self.ids)) if j not in hits[i] and P[i, j] >= bal_t[j]]
+                 if bal_t is not None else [] for i in range(len(turns))]
         ev = self._evidence(turns, roles, hits) if evidence else {}
         res_turns = []
         for i, (t, role) in enumerate(zip(turns, roles)):
@@ -69,8 +84,10 @@ class Predictor:
                 found.append({"id": tac["id"], "name": tac["name"], "group": tac["group"],
                               "score": round(float(P[i, j]), 3), "threshold": round(float(th_t[j]), 3),
                               "evidence": ev.get((i, j))})
+            possible = [{"id": self.ids[j], "name": self.tactics[j]["name"], "group": self.tactics[j]["group"],
+                         "score": round(float(P[i, j]), 3)} for j in sorted(maybe[i], key=lambda j: -P[i, j])]
             res_turns.append({"index": i, "speaker": t.speaker, "role": role, "text": t.raw,
-                              "model_text": t.text, "tactics": found,
+                              "model_text": t.text, "tactics": found, "possible_tactics": possible,
                               "predicted_role": {"actor": round(float(R[i, 0]), 3), "target": round(float(R[i, 1]), 3)}
                               if R.ndim == 2 and R.shape[1] == 2 else None})
 
@@ -79,18 +96,34 @@ class Predictor:
             focus = [i for i, r in enumerate(roles) if r == "actor"] or list(range(len(turns)))
             pooled = P[focus].max(axis=0)
             conv = [j for j in range(len(self.ids)) if pooled[j] >= th_d[j]]
-            conv = sorted(set(conv) | {j for i in focus for j in hits[i]}, key=lambda j: -pooled[j])
+            turn_backed = {j for i in focus for j in hits[i]}
+            # Conversation-only tactics with a weak pooled score (e.g. reward at 0.28 against a 0.15 cutoff)
+            # become possible signals instead of setting the verdict.
+            weak = {j for j in conv if j not in turn_backed and pooled[j] < CONV_ONLY_MIN}
+            conv = sorted((set(conv) - weak) | turn_backed, key=lambda j: -pooled[j])
             summary = [{"id": self.ids[j], "name": self.tactics[j]["name"], "group": self.tactics[j]["group"],
                         "score": round(float(pooled[j]), 3),
                         "turns": [i for i in focus if j in hits[i]]} for j in conv]
+            cand = set(weak)
+            if bal_d is not None:
+                cand |= {j for i in focus for j in maybe[i]}
+                cand |= {j for j in range(len(self.ids)) if pooled[j] >= max(bal_d[j], POSSIBLE_FLOOR)}
+            if cand:
+                possible = [{"id": self.ids[j], "name": self.tactics[j]["name"], "group": self.tactics[j]["group"],
+                             "score": round(float(pooled[j]), 3), "turns": [i for i in focus if j in maybe[i]]}
+                            for j in sorted(cand - set(conv), key=lambda j: -pooled[j])]
+            else:
+                possible = []
         else:
             summary = [{"id": d["id"], "name": d["name"], "group": d["group"], "score": d["score"], "turns": [0]}
                        for d in res_turns[0]["tactics"]]
+            possible = [dict(d, turns=[0]) for d in res_turns[0]["possible_tactics"]]
         g = G.mean(axis=0)
         groups = {s["group"] for s in summary}
         top = next((grp for grp in GROUP_ORDER if grp in groups), None)
         return {
-            "verdict": VERDICTS[top],
+            "verdict": POSSIBLE_VERDICT if top is None and possible else VERDICTS[top],
+            "possible": possible,
             "groups_found": [grp for grp in GROUP_ORDER if grp in groups],
             "summary": summary,
             "genre": {"label": self.genres[int(g.argmax())], "probs": dict(zip(self.genres, np.round(g, 3).tolist()))},

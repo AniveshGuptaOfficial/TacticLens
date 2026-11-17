@@ -61,6 +61,21 @@ datasets:
     file: llm_sms.csv
     columns: {label: LABEL, text: TEXT}
 
+  dailydialog:
+    # Everyday English chat as neutral, no-tactic turns, so ordinary requests and small talk
+    # stop looking like persuasion. Licence CC BY-NC-SA 4.0 (non-commercial, as MentalManip).
+    # Download ijcnlp_dailydialog.zip (Li et al., 2017) into this folder and leave it zipped,
+    # or put the Hugging Face parquet export here as train/ validation/ test/ folders.
+    # Official train + validation go into training (capped below, fixed seed); the official
+    # test dialogues are never trained on and are used by `python -m tacticlens.cli everyday`.
+    dir: data/raw/dailydialog
+    genre: neutral
+    source: human
+    licence: CC-BY-NC-SA-4.0
+    url: https://huggingface.co/datasets/li2017dailydialog/daily_dialog
+    max_train_dialogues: 2500
+    max_val_dialogues: 500
+
   sms_munoz:
     # DISABLED: checked 6 Nov 2026. 6,269 of 10,191 messages (61.5%) are exact copies of
     # Mishra-Soni, and the rest are synonym-swapped copies ("we embody prove to contact u"),

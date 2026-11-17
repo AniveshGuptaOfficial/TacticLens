@@ -79,6 +79,38 @@ def cmd_kappa(args) -> None:
     print(f"\nOverall kappa {overall} -> AC-01 {'MET' if overall >= 0.60 else 'NOT met'} (target 0.60)")
 
 
+def cmd_agree(args) -> None:
+    """Merge checkset_A.csv and checkset_B.csv into checkset_agreed.csv ("?" where they disagree)."""
+    from .taxonomy.manual import agree_checkset
+    root, _, tax = _paths(args)
+    d = root / "data" / "annotation"
+    out = d / "checkset_agreed.csv"
+    if out.exists() and not args.force:
+        raise SystemExit(f"{out} exists (it may hold your resolved '?' cells). Use --force to overwrite.")
+    c = agree_checkset(d / "checkset_A.csv", d / "checkset_B.csv", out, tax)
+    print(f"wrote {out}: {c['items']} items, {c['items_with_disagreement']} with a disagreement "
+          f"({c['tactic_disagreements']} tactic cells marked '?'). Resolve every '?' to 1 or blank, then save.")
+
+
+def cmd_label_batch(args) -> None:
+    """Export a new batch of train-split turns to hand-label (data/annotation/manual/batch_NN.csv)."""
+    from .taxonomy.manual import export_batch
+    root, cfg, tax = _paths(args)
+    p = export_batch(_records(root), tax, root, n=args.n, seed=cfg.get("seed", 42))
+    print(f"wrote {p}. Label it with docs/annotation_guide.md; put 1 in 'done' for each finished row; "
+          "then `prepare` uses those labels for training.")
+
+
+def cmd_manual_eval(args) -> None:
+    """Dataset labels and model vs the hand-labelled check set (val/test turns only)."""
+    from .analysis.manual_eval import manual_eval
+    from .taxonomy.manual import load_manual
+    root, _, tax = _paths(args)
+    md = manual_eval(_records(root), load_manual(root, tax), _predictor(args), tax)
+    tag = args.engine if args.engine == "onnx" else args.model
+    _write_report(root, f"manual_eval_{tag}.md", md)
+
+
 def _model_dir_name(model: str, variant: str, no_weak: bool = False) -> str:
     if model != "m3":
         return f"{model}_strict" if no_weak else model  # strict = no weak MentalManip turn labels
@@ -424,6 +456,70 @@ def cmd_analyze(args) -> None:
     print(json.dumps(res, indent=2, ensure_ascii=False))
 
 
+def cmd_everyday(args) -> None:
+    """False alarms on everyday chat: DailyDialog's official test dialogues (never trained on).
+    Every tactic flagged here is a false alarm, so lower is better. Run before and after adding
+    DailyDialog to training to measure the effect."""
+    import numpy as np
+
+    from .config import resolve
+    from .data.loaders import read_dailydialog
+    from .serve.predictor import POSSIBLE_VERDICT, VERDICTS
+    root, cfg, _ = _paths(args)
+    dd = cfg["datasets"].get("dailydialog") or {"dir": "data/raw/dailydialog"}
+    test = read_dailydialog(resolve(root, dd["dir"])).get("test")
+    if not test:
+        raise SystemExit("No DailyDialog test dialogues found (see the dailydialog entry in configs/datasets.yaml).")
+    rng = np.random.default_rng(args.seed)
+    pick = sorted(rng.choice(len(test), size=min(args.limit, len(test)), replace=False))
+    pred = _predictor(args)
+    cache: dict = {}
+    run = pred.engine.run
+
+    def cached(texts, roles):  # both modes reuse one model pass per dialogue
+        key = (tuple(texts), tuple(roles))
+        if key not in cache:
+            cache[key] = run(texts, roles)
+        return cache[key]
+    pred.engine.run = cached
+
+    lines = [f"# False alarms on everyday chat (DailyDialog test, {len(pick)} dialogues)", "",
+             f"Model: {pred.model_name} ({args.engine}). Every tactic flagged here is a false alarm.", ""]
+    for mode in [m for m in ("balanced", "careful") if m in pred.modes()]:
+        n_turns = turns_hit = clean = maybe = 0
+        per_tac: dict[str, int] = {}
+        verdicts: dict[str, int] = {}
+        genres: dict[str, int] = {}
+        for i in pick:
+            text = "\n".join(f"{'AB'[k % 2]}: {u}" for k, u in enumerate(test[i]))
+            res = pred.analyze(text, mode=mode, evidence=False)
+            for t in res["turns"]:
+                n_turns += 1
+                turns_hit += bool(t["tactics"])
+                for x in t["tactics"]:
+                    per_tac[x["name"]] = per_tac.get(x["name"], 0) + 1
+            verdicts[res["verdict"]] = verdicts.get(res["verdict"], 0) + 1
+            clean += res["verdict"] in (VERDICTS[None], POSSIBLE_VERDICT)
+            maybe += res["verdict"] == POSSIBLE_VERDICT
+            if res["genre"]:
+                genres[res["genre"]["label"]] = genres.get(res["genre"]["label"], 0) + 1
+        n = len(pick)
+        lines += [f"## {mode}", "",
+                  "| Measure | Value |", "|---|---|",
+                  f"| Turns with any tactic flagged | {turns_hit / max(n_turns, 1):.1%} ({turns_hit} of {n_turns}) |",
+                  f"| Conversations with no tactic in the verdict | {clean / n:.1%} ({clean} of {n}) |",
+                  f"| ... of which show possible signals only | {maybe / n:.1%} |",
+                  f"| Conversations labelled neutral genre | {genres.get('neutral', 0) / n:.1%} |", "",
+                  "| Verdict | Conversations |", "|---|---|"]
+        lines += [f"| {v} | {c} |" for v, c in sorted(verdicts.items(), key=lambda kv: -kv[1])]
+        lines += ["", "| Tactic flagged (false alarm) | Turns |", "|---|---|"]
+        lines += [f"| {k} | {v} |" for k, v in sorted(per_tac.items(), key=lambda kv: -kv[1])] or ["| none | 0 |"]
+        lines += ["", "| Genre | Conversations |", "|---|---|"]
+        lines += [f"| {k} | {v} |" for k, v in sorted(genres.items(), key=lambda kv: -kv[1])] + [""]
+    tag = args.tag or (args.engine if args.engine == "onnx" else args.model)
+    _write_report(root, f"everyday_{tag}.md", "\n".join(lines))
+
+
 def cmd_serve(args) -> None:
     import uvicorn
 
@@ -628,6 +724,21 @@ def main(argv=None) -> None:
     p.add_argument("--mode", default="balanced", choices=["balanced", "careful"])
     engine_args(p, None)
     p.set_defaults(fn=cmd_analyze)
+    p = sub.add_parser("agree", help="merge the two check-set annotators; '?' marks disagreements")
+    p.add_argument("--force", action="store_true", help="overwrite an existing checkset_agreed.csv")
+    p.set_defaults(fn=cmd_agree)
+    p = sub.add_parser("label-batch", help="export train turns to hand-label (MentalManip lines, SMS, P4G)")
+    p.add_argument("--n", type=int, default=200)
+    p.set_defaults(fn=cmd_label_batch)
+    p = sub.add_parser("manual-eval", help="dataset labels and model vs the hand-labelled check set")
+    engine_args(p, None)
+    p.set_defaults(fn=cmd_manual_eval)
+    p = sub.add_parser("everyday", help="false alarms on everyday chat (DailyDialog test; lower is better)")
+    p.add_argument("--limit", type=int, default=300, help="number of test dialogues (of 1,000)")
+    p.add_argument("--seed", type=int, default=42)
+    p.add_argument("--tag", help="report name suffix, e.g. before / after")
+    engine_args(p, None)
+    p.set_defaults(fn=cmd_everyday)
     p = sub.add_parser("serve", help="phase 4: FastAPI server (POST /analyze; docs at /docs)")
     engine_args(p, 8000)
     p.set_defaults(fn=cmd_serve)

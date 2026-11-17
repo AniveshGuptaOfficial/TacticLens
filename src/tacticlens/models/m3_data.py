@@ -38,7 +38,9 @@ def build_dialogues(records: list[dict], row_of_text) -> list[dict]:
         turns = sorted(turns, key=lambda r: r["turn_id"])
         first = turns[0]
         m_turn = np.array([1 if r["label_level"] == "turn" else 0 for r in turns], dtype=np.float32)
-        is_dlg = first["label_level"] == "dialogue"
+        # a MentalManip dialogue keeps its MIL label when some of its turns got hand labels
+        is_dlg = any(r["label_level"] == "dialogue" or (r.get("meta") or {}).get("source_label_level") == "dialogue"
+                     for r in turns)
         items.append({
             "dialogue_id": did,
             "turn_ids": [r["turn_id"] for r in turns],

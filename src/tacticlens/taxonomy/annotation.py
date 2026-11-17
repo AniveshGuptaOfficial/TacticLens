@@ -1,7 +1,7 @@
 """Check set for two annotators (FR-TAX-05) and Cohen's kappa (FR-TAX-06, AC-01).
 
-The check set is 300 turns, stratified so each tactic gets up to 30 items where the data allows,
-plus turns with no tactic and turns from every genre. Annotators see the turn and its two
+The check set is 300 turns: up to 16 per tactic, 60 SMS (human and LLM-written), 30 turns with
+no source tactic, the rest spread over genres (see select_checkset). Annotators see the turn and its two
 previous turns, never the source labels (those go to a separate key file).
 """
 
@@ -29,24 +29,69 @@ def _source_tactics(r: dict) -> list[str]:
     return []
 
 
-def select_checkset(records: list[dict], tax: Taxonomy, n: int = 300, per_tactic: int = 30, seed: int = 42) -> list[dict]:
+def select_checkset(records: list[dict], tax: Taxonomy, n: int = 300, per_tactic: int = 16, n_sms: int = 60,
+                    n_none: int = 30, seed: int = 42) -> list[dict]:
+    """Val/test turns in three parts, so the check set tests what the thesis claims:
+
+      tactics  up to `per_tactic` turns per source tactic (rare tactics still get items)
+      SMS      `n_sms` messages, half Mishra-Soni (human) and half LLM-generated, mostly smishing
+               plus some spam and ham; they have no source labels and are what settles the
+               human-vs-LLM tactic profiles
+      none     `n_none` turns with no source tactic (neutral talk, persuadee replies), so
+               annotators also see turns where the right answer is "nothing"
+    and the rest filled evenly by genre.
+    """
     rng = random.Random(seed)
     pool = [r for r in records if r["split"] in ("val", "test")] or records
+    n_sms, n_none = min(n_sms, n // 5), min(n_none, n // 10)  # keep the parts in proportion for small n
+    per_tactic = min(per_tactic, max(1, (n - n_sms - n_none) // max(1, len(tax.all_label_ids))))
+    chosen: dict[tuple, dict] = {}
+
+    def take(r):
+        chosen[(r["dialogue_id"], r["turn_id"])] = r
+
+    def free(rs):
+        return [r for r in rs if (r["dialogue_id"], r["turn_id"]) not in chosen]
+
+    # 1. SMS, human and LLM, by label: 1/2 smishing, 1/4 spam, 1/4 ham
+    for ds in ("sms_human", "sms_llm"):
+        want = n_sms // 2
+        by_lab: dict[str, list[dict]] = defaultdict(list)
+        for r in pool:
+            if r["dataset"] == ds:
+                by_lab[(r.get("meta") or {}).get("sms_label", "")].append(r)
+        for lab in by_lab:
+            rng.shuffle(by_lab[lab])
+        quota = {"smishing": want // 2, "spam": want // 4}
+        quota["ham"] = want - sum(quota.values())
+        for lab, q in quota.items():
+            for r in by_lab.get(lab, [])[:q]:
+                take(r)
+        rest = [r for lab in by_lab for r in by_lab[lab]]
+        rng.shuffle(rest)
+        got = sum(1 for r in chosen.values() if r["dataset"] == ds)
+        for r in free(rest)[:max(0, want - got)]:
+            take(r)
+    # 2. per tactic (labelled datasets)
     by_tactic: dict[str, list[dict]] = defaultdict(list)
     for r in pool:
         for t in _source_tactics(r):
             by_tactic[t].append(r)
-    chosen: dict[tuple, dict] = {}
     for t in tax.all_label_ids:
         cands = by_tactic.get(t, [])
         rng.shuffle(cands)
-        for r in cands[:per_tactic]:
-            chosen[(r["dialogue_id"], r["turn_id"])] = r
-    # fill the rest evenly by genre (covers no-tactic turns and unlabelled genres)
+        for r in free(cands)[:per_tactic]:
+            take(r)
+    # 3. labelled turns with no tactic
+    none = [r for r in pool if r["label_level"] in ("turn", "dialogue") and not _source_tactics(r)
+            and not r["dataset"].startswith("sms")]
+    rng.shuffle(none)
+    for r in free(none)[:n_none]:
+        take(r)
+    # 4. fill the rest evenly by genre
     by_genre: dict[str, list[dict]] = defaultdict(list)
-    for r in pool:
-        if (r["dialogue_id"], r["turn_id"]) not in chosen:
-            by_genre[r["genre"]].append(r)
+    for r in free(pool):
+        by_genre[r["genre"]].append(r)
     for g in by_genre:
         rng.shuffle(by_genre[g])
     genres = sorted(by_genre)
@@ -54,12 +99,11 @@ def select_checkset(records: list[dict], tax: Taxonomy, n: int = 300, per_tactic
     while len(chosen) < n and any(by_genre.values()):
         g = genres[i % len(genres)]
         if by_genre[g]:
-            r = by_genre[g].pop()
-            chosen[(r["dialogue_id"], r["turn_id"])] = r
+            take(by_genre[g].pop())
         i += 1
-    items = list(chosen.values())[:n]
+    items = list(chosen.values())
     rng.shuffle(items)
-    return items
+    return items[:n]
 
 
 def export_checkset(records: list[dict], tax: Taxonomy, out_dir: Path, n: int = 300, seed: int = 42) -> list[Path]:

@@ -17,7 +17,8 @@ from .predictor import Predictor
 
 GROUP_COLOURS = {"manipulative": "#e5484d", "pressure": "#f5a524", "legitimate": "#30a46c"}
 GROUP_LABEL = {"manipulative": "manipulative", "pressure": "pressure", "legitimate": "legitimate appeal"}
-MODE_LABELS = {"balanced": "Balanced (catches more)", "careful": "Careful (fewer false alarms)"}
+MODE_LABELS = {"balanced": "Balanced (catches more)",
+               "careful": "Careful (fewer false alarms; near-misses shown as possible signals)"}
 
 
 def highlights(result: dict) -> list[tuple[str, str | None]]:
@@ -59,6 +60,12 @@ def summary_markdown(result: dict) -> str:
         for s in result["summary"]:
             turns = ", ".join(str(i + 1) for i in s["turns"]) or "whole conversation"
             lines.append(f"| {s['name']} | {GROUP_LABEL.get(s['group'], s['group'])} | {s['score']:.2f} | {turns} |")
+    if result.get("possible"):
+        lines += ["", "**Possible signals** (weak or near-miss scores; not counted in the verdict)",
+                  "", "| Tactic | Type | Score | Turns |", "|---|---|---|---|"]
+        for s in result["possible"]:
+            turns = ", ".join(str(i + 1) for i in s["turns"]) or "whole conversation"
+            lines.append(f"| {s['name']} | {GROUP_LABEL.get(s['group'], s['group'])} | {s['score']:.2f} | {turns} |")
     lines += ["", f"*{result['disclaimer']}*"]
     return "\n".join(lines)
 
@@ -66,8 +73,10 @@ def summary_markdown(result: dict) -> str:
 def turn_rows(result: dict) -> list[list[str]]:
     rows = []
     for t in result["turns"]:
-        tacs = "; ".join(f"{x['name']} ({x['score']:.2f})" for x in t["tactics"]) or "-"
-        ev = "; ".join(x["evidence"]["text"] for x in t["tactics"] if x.get("evidence") and x["evidence"].get("score"))
+        tacs = "; ".join(f"{x['name']} ({x['score']:.2f})" for x in t["tactics"])
+        maybe = "; ".join(f"{x['name']} ({x['score']:.2f})" for x in t.get("possible_tactics", []))
+        tacs = "; ".join(p for p in [tacs, f"possible: {maybe}" if maybe else ""] if p) or "-"
+        ev = "; ".join(dict.fromkeys(x["evidence"]["text"] for x in t["tactics"] if x.get("evidence")))
         rows.append([str(t["index"] + 1), t["speaker"], t["role"], tacs, ev or "-"])
     return rows
 
@@ -94,7 +103,12 @@ def build_ui(predictor: Predictor, feedback_log: Path | None = None):
     def run(text, actor, mode_label):
         mode = next((m for m in modes if MODE_LABELS[m] == mode_label), "balanced")
         res = predictor.analyze(text or "", actor=(actor or "").strip() or None, mode=mode)
-        return summary_markdown(res), highlights(res), turn_rows(res), res
+        found = {lab for _, lab in highlights(res) if lab}
+        names = {n for lab in found for n in lab.split(" + ")}
+        # Legend lists only the tactics found in this result.
+        marked_out = gr.HighlightedText(value=highlights(res),
+                                        color_map={k: v for k, v in colour_map.items() if k in names} or None)
+        return summary_markdown(res), marked_out, turn_rows(res), res
 
     def send(text, rating, comment, last):
         if feedback_log is None:

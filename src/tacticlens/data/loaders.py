@@ -347,6 +347,120 @@ def load_psyscam(cfg: dict[str, Any], root: Path, tax: Taxonomy, stats: dict | N
     return records
 
 
+# ----------------------------------------------------------------- DailyDialog
+# Everyday English conversations (Li et al., IJCNLP 2017; CC BY-NC-SA 4.0), used as neutral turns
+# with no tactic, so the model sees ordinary chat ("can I borrow your kettle?") as a negative.
+# Only the official train and validation dialogues enter the pipeline, each keeping its own split
+# (meta["fixed_split"]); the official test dialogues are kept out for `cli everyday`.
+_DD_SPLITS = (("validation", "val"), ("valid", "val"), ("train", "train"), ("test", "test"))
+_DD_DETOK = [(re.compile(r"\s+([,.!?;:%)\]])"), r"\1"), (re.compile(r"([(\[$])\s+"), r"\1"),
+             (re.compile(r"\s*([\u2019'])\s*(s|m|re|ve|ll|d|t)\b", re.I), r"\1\2"),
+             (re.compile(r"\s+(n[\u2019']t)\b", re.I), r"\1")]
+
+
+def _dd_split_of(name: str) -> str | None:
+    name = name.lower()
+    return next((v for k, v in _DD_SPLITS if k in name), None)
+
+
+def dd_detok(u: str) -> str:
+    u = " ".join(u.split())
+    for pat, rep in _DD_DETOK:
+        u = pat.sub(rep, u)
+    return u
+
+
+def _dd_parse_text(raw: str) -> list[list[str]]:
+    out = []
+    for line in raw.splitlines():
+        utts = [dd_detok(u) for u in line.split("__eou__")]
+        utts = [u for u in utts if u]
+        if utts:
+            out.append(utts)
+    return out
+
+
+def read_dailydialog(d: Path) -> dict[str, list[list[str]]]:
+    """{'train'|'val'|'test': [dialogue = list of utterances]} from what is in `d`:
+    the original release (dialogues_<split>.txt, utterances ending in __eou__; folders or the
+    release's zip files, nested zips too), or tables with a `dialog` column whose path names the
+    split (e.g. the Hugging Face parquet export: train/0000.parquet)."""
+    import io
+    import zipfile
+
+    d = Path(d)
+    if not d.exists():
+        raise FileNotFoundError(f"DailyDialog: folder {d} not found")
+    found: dict[str, list[list[str]]] = {}
+
+    def take(name: str, raw: bytes) -> None:
+        base = Path(name).name.lower()
+        if not (base.startswith("dialogues_") and base.endswith(".txt")) or "_act" in base or "_emotion" in base:
+            return
+        split = _dd_split_of(base)
+        if split and split not in found:
+            found[split] = _dd_parse_text(raw.decode("utf-8", errors="replace"))
+
+    def walk_zip(zf: zipfile.ZipFile) -> None:
+        for info in zf.infolist():
+            if info.filename.lower().endswith(".zip"):
+                walk_zip(zipfile.ZipFile(io.BytesIO(zf.read(info))))
+            elif info.filename.lower().endswith(".txt"):
+                take(info.filename, zf.read(info))
+
+    for p in sorted(d.rglob("*")):
+        if not p.is_file():
+            continue
+        suf = p.suffix.lower()
+        if suf == ".txt":
+            take(p.name, p.read_bytes())
+        elif suf == ".zip":
+            walk_zip(zipfile.ZipFile(p))
+        elif suf in (".parquet", ".csv", ".jsonl", ".json"):
+            split = _dd_split_of(str(p.relative_to(d)))
+            if not split or split in found:
+                continue
+            df = pd.read_parquet(p) if suf == ".parquet" else read_table(p)
+            col = next((c for c in df.columns if str(c).lower() in ("dialog", "dialogue", "utterances")), None)
+            if col is None:
+                continue
+            dialogs = []
+            for v in df[col]:
+                utts = list(v) if not isinstance(v, str) else parse_structured(v) or v.split("__eou__")
+                utts = [dd_detok(str(u)) for u in utts if str(u).strip()]
+                if utts:
+                    dialogs.append(utts)
+            found[split] = dialogs
+    if not found.get("train"):
+        raise FileNotFoundError(f"DailyDialog: no train dialogues found in {d} (see configs/datasets.yaml)")
+    return found
+
+
+def load_dailydialog(cfg: dict[str, Any], root: Path, tax: Taxonomy) -> list[Record]:
+    import numpy as np
+
+    data = read_dailydialog(resolve(root, cfg["dir"]))
+    caps = {"train": cfg.get("max_train_dialogues", 2500), "val": cfg.get("max_val_dialogues", 500)}
+    rng = np.random.default_rng(cfg.get("seed", 42))
+    records = []
+    for split in ("train", "val"):
+        dialogs = data.get(split, [])
+        idx = np.arange(len(dialogs))
+        if caps[split] and len(idx) > caps[split]:
+            idx = np.sort(rng.choice(idx, size=caps[split], replace=False))
+        for i in idx:
+            for t, utt in enumerate(dialogs[i]):
+                text = normalize(utt)
+                if not text:
+                    continue
+                records.append(Record(
+                    dialogue_id=f"dd_{split}_{i}", turn_id=t, speaker="AB"[t % 2], role="unknown",
+                    text=text, genre="neutral", source="human", dataset="dailydialog",
+                    label_level="turn", tactics=[], meta={"fixed_split": split},
+                ))
+    return records
+
+
 LOADERS = {
     "p4g": lambda c, r, t: load_p4g(c, r, t),
     "mentalmanip": lambda c, r, t: load_mentalmanip(c, r, t),
@@ -354,4 +468,5 @@ LOADERS = {
     "sms_llm": lambda c, r, t: load_sms("sms_llm", c, r, t),
     "sms_munoz": lambda c, r, t: load_sms("sms_munoz", c, r, t),
     "psyscam": lambda c, r, t: load_psyscam(c, r, t),
+    "dailydialog": lambda c, r, t: load_dailydialog(c, r, t),
 }

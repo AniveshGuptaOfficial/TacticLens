@@ -9,7 +9,12 @@ from ..data.normalize import normalize
 
 MAX_TURNS = 60
 MAX_CHARS = 6000
-_SPEAKER = re.compile(r"^\s*([A-Za-z][\w .'-]{0,30}?)\s*:\s+(.+)$")
+# A speaker name: up to 40 characters with no colon (emoji allowed, e.g. a saved contact "Unknown 🫥").
+_SPEAKER = re.compile(r"^\s*([^\s:\[\]][^:\n]{0,39}?)\s*:\s+(.+)$")
+# WhatsApp timestamps in front of a line: "[6:01 PM, 11/2/2026] " (copied) or "11/2/26, 6:01 pm - " (exported).
+_TIME = r"\d{1,2}[:.]\d{2}(?:[:.]\d{2})?(?:\s*[AaPp]\.?[Mm]\.?)?"
+_DATE = r"\d{1,2}[/.-]\d{1,2}[/.-]\d{2,4}"
+_STAMP = re.compile(rf"^\s*\[?\s*(?:{_TIME},\s*{_DATE}|{_DATE},?\s*{_TIME})\s*\]?\s*(?:-\s*)?")
 _SENT = re.compile(r"(?<=[.!?])\s+(?=[\"'A-Z0-9<(])|\n+")
 
 
@@ -22,9 +27,11 @@ class Turn:
 
 def parse_conversation(text: str) -> list[Turn]:
     """Lines starting with "Name:" open a new turn; other lines continue the current one.
+    WhatsApp timestamps in front of a line are removed first.
     With fewer than two such lines the whole input is one message (an SMS, an email, a post)."""
     text = (text or "")[:MAX_CHARS]
-    lines = [ln for ln in text.splitlines() if ln.strip()]
+    lines = [_STAMP.sub("", ln, count=1) for ln in text.splitlines()]
+    lines = [ln for ln in lines if ln.strip()]
     if not lines:
         return []
     if sum(bool(_SPEAKER.match(ln)) for ln in lines) < 2:  # "URGENT: ..." alone is a message, not a speaker

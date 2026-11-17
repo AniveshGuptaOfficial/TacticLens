@@ -46,7 +46,8 @@ def test_prepare_end_to_end(project):
     tax = load_taxonomy(project / "configs" / "taxonomy.yaml")
     summary = prepare(cfg, project, tax)
     assert summary["datasets"]["sms_munoz"].startswith("disabled")
-    assert all(v.startswith("ok") for k, v in summary["datasets"].items() if k != "sms_munoz")
+    assert all(v.startswith("ok") for k, v in summary["datasets"].items() if k not in ("sms_munoz", "dailydialog"))
+    assert summary["datasets"]["dailydialog"].startswith("missing")  # optional; not in this fixture
     recs = read_records(project / "data" / "processed" / "records.jsonl")
     # no dialogue in two splits (FR-DAT-06)
     split_of = defaultdict(set)

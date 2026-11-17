@@ -22,6 +22,7 @@ def test_checkset_and_kappa(project):
     da = pd.read_csv(a, encoding="utf-8-sig")
     assert len(da) == 40 and "T1" in da and "evidence" in da
     assert "source_tactics" not in da  # annotators never see source labels
+    assert set(da["dataset"]) >= {"sms_human", "sms_llm"}  # SMS are in, for the human-vs-LLM check
     # A and B agree on T5, disagree once on T9
     da["T5"] = ["1" if i % 4 == 0 else "" for i in range(40)]
     da["T9"] = ["x" if i % 5 == 0 else "" for i in range(40)]

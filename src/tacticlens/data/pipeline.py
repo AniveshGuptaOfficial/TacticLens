@@ -28,7 +28,7 @@ from .splits import dialogue_splits, logo_splits
 log = logging.getLogger(__name__)
 
 # Dedupe priority: earlier datasets keep their copy.
-DATASET_ORDER = ("p4g", "mentalmanip", "psyscam", "sms_human", "sms_llm", "sms_munoz")
+DATASET_ORDER = ("p4g", "mentalmanip", "psyscam", "sms_human", "sms_llm", "sms_munoz", "dailydialog")
 
 
 def load_all(cfg: dict[str, Any], root: Path, tax: Taxonomy, only: list[str] | None = None) -> tuple[list[Record], dict]:
@@ -81,13 +81,24 @@ def prepare(cfg: dict[str, Any], root: Path, tax: Taxonomy, out_dir: Path | None
     records = [r for r in records if r.dialogue_id not in dropped]
     kept_info = {d: v for d, v in info.items() if d not in dropped}
 
-    split = dialogue_splits(kept_info, cfg.get("split", {"train": 0.7, "val": 0.15, "test": 0.15}), cfg.get("seed", 42))
+    # Datasets with their own official split (DailyDialog) keep it, and stay out of the random
+    # split, so adding them leaves every other dataset's train/val/test assignment unchanged.
+    fixed = {r.dialogue_id: r.meta["fixed_split"] for r in records if (r.meta or {}).get("fixed_split")}
+    split = dialogue_splits({d: v for d, v in kept_info.items() if d not in fixed},
+                            cfg.get("split", {"train": 0.7, "val": 0.15, "test": 0.15}), cfg.get("seed", 42))
+    split.update(fixed)
     logo = logo_splits(split, {d: v[1] for d, v in kept_info.items()})
 
+    dicts = []
+    for r in records:
+        d = r.to_dict()
+        d["split"] = split[r.dialogue_id]
+        dicts.append(d)
+    # Hand labels (data/annotation/) replace source labels of train-split turns only.
+    from ..taxonomy.manual import apply_manual, load_manual
+    n_manual = apply_manual(dicts, load_manual(root, tax))
     with open(out_dir / "records.jsonl", "w", encoding="utf-8") as f:
-        for r in records:
-            d = r.to_dict()
-            d["split"] = split[r.dialogue_id]
+        for d in dicts:
             f.write(json.dumps(d, ensure_ascii=False) + "\n")
     with open(out_dir / "splits.csv", "w", newline="", encoding="utf-8") as f:
         w = csv.writer(f)
@@ -109,6 +120,7 @@ def prepare(cfg: dict[str, Any], root: Path, tax: Taxonomy, out_dir: Path | None
         "duplicates_removed": {f"{ds}:{k}": c for (ds, k), c in sorted(drop_counts.items())},
         "split_dialogues": dict(Counter(split.values())),
         "unmapped_label_types": len(tax.unmapped),
+        "hand_labelled_train_turns": n_manual,
     }
     with open(report_dir / "prepare_summary.json", "w", encoding="utf-8") as f:
         json.dump(summary, f, indent=2)

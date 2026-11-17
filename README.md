@@ -83,7 +83,7 @@ python -m tacticlens.cli checkset     # data/annotation/checkset_A.csv and _B.cs
 python -m tacticlens.cli train-m0     # M0 baseline + metrics with 95% CIs (FR-MOD-01, FR-EVA-01)
 ```
 
-After both annotators fill in their check-set CSVs:
+After both annotators fill in their check-set CSVs (rules and practice items: `docs/annotation_guide.md`):
 
 ```powershell
 python -m tacticlens.cli kappa        # Cohen's kappa per tactic (FR-TAX-06, AC-01)

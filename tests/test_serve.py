@@ -51,6 +51,20 @@ def test_parse_single_message_and_conversation():
     assert parse_conversation("   ") == []
 
 
+def test_parse_whatsapp_copy_and_export():
+    copied = ("[6:01 PM, 11/2/2026] Unknown \U0001fae5: Bhai kettle la sakta hoon?\n"
+              "[6:43 PM, 11/2/2026] Ravi Kumar: Ajj leke jaa\n"
+              "mai to bola tha\n"
+              "[10:36 PM, 11/3/2026] Unknown \U0001fae5: ohh koi nahi")
+    turns = parse_conversation(copied)
+    assert [t.speaker for t in turns] == ["Unknown \U0001fae5", "Ravi Kumar", "Unknown \U0001fae5"]
+    assert turns[1].raw == "Ajj leke jaa mai to bola tha"
+    exported = "11/2/26, 6:01 pm - Asha: see https://x.org now\n11/2/26, 6:02 pm - Ben: ok"
+    assert [(t.speaker, t.raw) for t in parse_conversation(exported)] == [("Asha", "see https://x.org now"),
+                                                                          ("Ben", "ok")]
+    assert len(parse_conversation("URGENT: verify at 10:30 today")) == 1
+
+
 def test_sentences_cover_text():
     t = "First one. Second one! Third? yes"
     sp = sentences(t)
@@ -77,9 +91,29 @@ def test_predictor_single_message_and_modes():
     multi = [x for x in sms["turns"][0]["tactics"] if x["evidence"]["score"] is not None]
     assert multi and all(sms["turns"][0]["text"][x["evidence"]["start"]:x["evidence"]["end"]] == x["evidence"]["text"]
                          for x in multi)
-    assert p.analyze(EXAMPLES[2]["text"], mode="careful")["summary"] == []  # 0.9 < 0.95
+    careful = p.analyze(EXAMPLES[2]["text"], mode="careful")
+    assert careful["summary"] == []  # 0.9 < 0.95
+    assert {s["id"] for s in careful["possible"]} >= {"T5", "T9"}  # 0.9 >= balanced 0.5
+    assert careful["verdict"] == "No clear tactic, but possible signals"
+    assert "Possible signals" in summary_markdown(careful) and "possible:" in turn_rows(careful)[0][3]
+    assert sms["possible"] == []  # balanced mode lists no possible signals
+    conv = p.analyze(EXAMPLES[1]["text"], actor="Sam", mode="careful")
+    assert conv["summary"] == [] and "T8" in {s["id"] for s in conv["possible"]}
     assert p.analyze(EXAMPLES[4]["text"])["verdict"] == "No influence tactic found"
     assert p.analyze("")["turns"] == []
+
+
+def test_weak_conversation_only_tactic_is_a_possible_signal():
+    class Flat(FakeEngine):
+        def run(self, texts, roles):
+            out = super().run(texts, roles)
+            out["tactic"][:, TACTICS.index("T6")] = 0.3  # below the turn cutoff 0.5, above dialogue 0.2
+            return out
+    b = bundle()
+    b["thresholds"]["balanced"] = [[0.5] * len(TACTICS), [0.2] * len(TACTICS)]
+    res = Predictor(Flat(), b).analyze("Asha: hi there\nBen: see you tomorrow")
+    assert res["summary"] == [] and [s["id"] for s in res["possible"]] == ["T6"]
+    assert res["verdict"] == "No clear tactic, but possible signals"
 
 
 def test_ui_helpers(tmp_path):
@@ -89,7 +123,10 @@ def test_ui_helpers(tmp_path):
     assert "".join(s for s, _ in pieces).count("\n") == len(res["turns"]) - 1
     assert any(lab and "name T8" in lab for _, lab in pieces)
     assert "Manipulation signals" in summary_markdown(res)
-    assert len(turn_rows(res)) == len(res["turns"])
+    rows = turn_rows(res)
+    assert len(rows) == len(res["turns"])
+    sam = next(r for r, t in zip(rows, res["turns"]) if t["tactics"])
+    assert sam[4] != "-"  # evidence shown even for one-sentence turns
     log = tmp_path / "fb.csv"
     log_feedback(log, "secret text", res, "Helpful", "nice")
     content = log.read_text()
