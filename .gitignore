@@ -12,3 +12,4 @@ models/*
 !models/.gitkeep
 space/
 reports/study_feedback.csv
+backup_v1/
