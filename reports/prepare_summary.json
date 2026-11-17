@@ -5,20 +5,24 @@
     "psyscam": "ok (730 turns)",
     "sms_human": "ok (5971 turns)",
     "sms_llm": "ok (993 turns)",
-    "sms_munoz": "disabled in configs/datasets.yaml"
+    "sms_munoz": "disabled in configs/datasets.yaml",
+    "dailydialog": "ok (23772 turns)"
   },
-  "turns": 54383,
-  "dialogues": 12411,
+  "turns": 77292,
+  "dialogues": 15308,
   "duplicates_removed": {
+    "dailydialog:exact": 78,
+    "dailydialog:near": 25,
     "mentalmanip:exact": 1,
     "sms_human:exact": 231,
     "sms_human:near": 64,
     "sms_llm:exact": 4
   },
   "split_dialogues": {
-    "train": 8687,
-    "val": 1862,
+    "train": 11114,
+    "val": 2332,
     "test": 1862
   },
-  "unmapped_label_types": 0
+  "unmapped_label_types": 0,
+  "hand_labelled_train_turns": 0
 }

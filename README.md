@@ -10,15 +10,16 @@ decision rests on. Everything trains and runs on a laptop CPU, at zero cost.
 
 ## Results at a glance
 
-Final model `m3_no-context_ev`, test split, mean over 3 seeds where shown.
+Final model `m3_no-context_ev`, trained with DailyDialog, test split. Mean ± SD over 3 seeds where shown.
 
 | What | Score |
 |---|---|
-| Tactic detection, single turns (macro-F1) | 0.586 ± 0.007 (best baseline 0.585, M0 strict) |
-| Tactic detection, whole conversations (macro-F1) | 0.356 ± 0.017 (best baseline 0.304, M0) |
-| SMS: scam or not (accuracy) | 97.1% (F1 93.8%) |
-| Single turns: uses any tactic (accuracy) | 85.3% (F1 82.7%) |
-| Grounding: score drop when the evidence is deleted | 0.221 (random words deleted: 0.016) |
+| Tactic detection, single turns (macro-F1) | 0.571 ± 0.006 (best baseline 0.578, M0 strict, which scores 0.078 on conversations) |
+| Tactic detection, whole conversations (macro-F1) | 0.348 ± 0.008 (best baseline 0.297, M2) |
+| SMS: scam or not (accuracy) | 98.0% (F1 95.6%) |
+| Single turns: uses any tactic (accuracy) | 84.7% (F1 82.5%) |
+| Everyday chat: turns wrongly flagged (DailyDialog test) | 4.5% balanced, 0.9% careful (32.9% and 17.8% before DailyDialog) |
+| Grounding: score drop when the evidence is deleted | 0.221 (random words deleted: 0.016; first data version) |
 | App model size and speed | 23 MB int8 ONNX, about 100 ms per turn on CPU |
 
 ## Taxonomy
